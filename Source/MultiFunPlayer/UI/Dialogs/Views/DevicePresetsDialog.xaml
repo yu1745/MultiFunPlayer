@@ -1,0 +1,62 @@
+<UserControl x:Class="MultiFunPlayer.UI.Dialogs.Views.DevicePresetsDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:s="https://github.com/canton7/Stylet"
+             xmlns:material="http://materialdesigninxaml.net/winfx/xaml/themes"
+             x:ClassModifier="internal">
+    <ScrollViewer MaxHeight="620" VerticalScrollBarVisibility="Auto">
+        <StackPanel Width="680" Margin="24">
+            <TextBlock Text="设备运动预设" FontSize="22" Margin="0 0 0 8"/>
+            <TextBlock Text="窗口打开期间暂停串口动作输出。关闭后恢复输出；视频保持暂停。"
+                       TextWrapping="Wrap" Opacity=".7" Margin="0 0 0 16"/>
+            <DockPanel Margin="0 0 0 12">
+                <Button DockPanel.Dock="Right" Content="刷新" Command="{s:Action RefreshPresets}" IsEnabled="{Binding CanEdit}" Margin="12 0 0 0"/>
+                <ComboBox ItemsSource="{Binding Groups}" SelectedIndex="{Binding GroupIndex}" IsEnabled="{Binding CanEdit}"/>
+            </DockPanel>
+            <TextBlock Text="{Binding Current, StringFormat=设备当前：{0}}" Margin="0 0 0 12"/>
+            <DataGrid ItemsSource="{Binding Presets}" SelectedItem="{Binding SelectedPreset}" IsEnabled="{Binding CanEdit}"
+                      AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
+                      SelectionMode="Single" SelectionUnit="FullRow" Height="180">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="预设" Binding="{Binding Name}" Width="*"/>
+                    <DataGridTextColumn Header="速度 V" Binding="{Binding Velocity}" Width="110"/>
+                    <DataGridTextColumn Header="加速度 A" Binding="{Binding Acceleration}" Width="110"/>
+                    <DataGridTextColumn Header="加加速度 J" Binding="{Binding Jerk}" Width="115"/>
+                    <DataGridTextColumn Header="状态" Binding="{Binding Match}" Width="65"/>
+                </DataGrid.Columns>
+            </DataGrid>
+            <DockPanel Margin="0 12 0 18">
+                <Button DockPanel.Dock="Right" Content="应用选中预设" Command="{s:Action Load}" IsEnabled="{Binding CanLoad}"/>
+                <CheckBox Content="同时保存为开机参数" IsChecked="{Binding Persist}" IsEnabled="{Binding CanEdit}" VerticalAlignment="Center"/>
+            </DockPanel>
+            <TextBlock Text="调整当前参数" FontWeight="SemiBold" Margin="0 0 0 12"/>
+            <Grid IsEnabled="{Binding CanEdit}" Margin="0 0 0 18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Grid.Column="0" Text="{Binding Velocity, UpdateSourceTrigger=PropertyChanged}" material:HintAssist.Hint="速度 V" material:HintAssist.IsFloating="True" Margin="0 0 12 0"/>
+                <TextBox Grid.Column="1" Text="{Binding Acceleration, UpdateSourceTrigger=PropertyChanged}" material:HintAssist.Hint="加速度 A" material:HintAssist.IsFloating="True" Margin="0 0 12 0"/>
+                <TextBox Grid.Column="2" Text="{Binding Jerk, UpdateSourceTrigger=PropertyChanged}" material:HintAssist.Hint="加加速度 J" material:HintAssist.IsFloating="True" Margin="0 0 12 0"/>
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Bottom">
+                    <Button Content="临时应用" Command="{s:Action ApplyValues}" Margin="0 0 8 0"/>
+                    <Button Content="保存为开机参数" Command="{s:Action ApplyStartupValues}"/>
+                </StackPanel>
+            </Grid>
+            <DockPanel IsEnabled="{Binding CanEdit}" Margin="0 0 0 12">
+                <Button DockPanel.Dock="Right" Content="保存设备当前值" Command="{s:Action Save}" Margin="12 0 0 0"/>
+                <CheckBox DockPanel.Dock="Right" Content="允许覆盖" IsChecked="{Binding Replace}" VerticalAlignment="Center" Margin="12 0 0 0"/>
+                <TextBox Text="{Binding PresetName, UpdateSourceTrigger=PropertyChanged}" material:HintAssist.Hint="预设名称"/>
+            </DockPanel>
+            <DockPanel Margin="0 0 0 16">
+                <Button DockPanel.Dock="Right" Content="删除选中预设" Command="{s:Action Delete}" IsEnabled="{Binding CanDelete}"/>
+                <CheckBox Content="确认删除选中预设" IsChecked="{Binding ConfirmDelete}" IsEnabled="{Binding CanLoad}" VerticalAlignment="Center"/>
+            </DockPanel>
+            <ProgressBar Height="3" IsIndeterminate="{Binding IsBusy}" Margin="0 0 0 8"/>
+            <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0 0 0 8"/>
+            <Expander Header="通信详情">
+                <TextBox Text="{Binding Log, Mode=OneWay}" IsReadOnly="True" Height="110" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+            </Expander>
+            <Button Content="关闭" Command="{s:Action Dismiss}" IsEnabled="{Binding CanDismiss}" HorizontalAlignment="Right" Margin="0 12 0 0"/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

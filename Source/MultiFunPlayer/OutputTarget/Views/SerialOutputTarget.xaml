@@ -71,6 +71,14 @@
                     </material:PackIcon>
                 </Button>
 
+                <Button DockPanel.Dock="Left" Command="{s:Action OpenPresets}"
+                        IsEnabled="{Binding CanOpenPresets}" ToolTip="设备运动预设（连接后可用）"
+                        ToolTipService.ShowOnDisabled="True"
+                        Padding="0"
+                        Style="{StaticResource MaterialDesignProgressToolBarButton}">
+                    <material:PackIcon Kind="Tune" Width="20" Height="20"/>
+                </Button>
+
                 <ToggleButton DockPanel.Dock="Left"
                               Style="{StaticResource MaterialDesignToolBarToggleButton}"
                               IsChecked="{Binding AutoConnectEnabled}"

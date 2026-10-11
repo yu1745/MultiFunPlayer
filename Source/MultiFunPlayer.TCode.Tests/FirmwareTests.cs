@@ -19,6 +19,34 @@ public sealed class FirmwareFactAttribute : FactAttribute
 public class FirmwareTests
 {
     [FirmwareFact]
+    public async Task HostShrinksTimelineAndDeviceIndependentlyRejectsUnsafeBatch()
+    {
+        using var firmware = new Firmware();
+        await using var client = firmware.Client();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var token = timeout.Token;
+        await client.SynchronizeAsync(token);
+        var limits = await client.QueryLimitsAsync(token);
+        var plan = TCodeBufferedPlan.CreateLimited(ProtocolAndPlanTests.Snapshot([new(0, 0), new(.2, 1), new(.4, 0)]), limits);
+        Assert.InRange(plan.AmplitudeScale, 0, .01);
+        var start = client.Now + 3000000;
+        await client.BeginAsync(1, start, token);
+        foreach (var node in plan.Nodes[0])
+            await client.SendAsync(2, token, 0, start + node.Microseconds, node.Position);
+        await client.SendAsync(3, token, 1);
+        await client.SendAsync(4, token);
+        await client.StopAsync(token);
+        await client.QueryLimitsAsync(token);
+        start = client.Now + 3000000;
+        await client.BeginAsync(1, start, token);
+        var error = await Assert.ThrowsAsync<TCodeBufferedException>(() => client.SendAsync(2, token, 0, start + 1000, 9999));
+        Assert.Equal(9UL, error.Code);
+        await client.SendAsync(0, token);
+        Assert.Equal(511UL, client.Status[9]);
+        await client.StopAsync(token);
+    }
+
+    [FirmwareFact]
     public async Task ActualP4AcceptsHandshakeAppendSealArmAndStop()
     {
         using var firmware = new Firmware();
@@ -26,6 +54,7 @@ public class FirmwareTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var token = timeout.Token;
         await client.SynchronizeAsync(token);
+        await client.QueryLimitsAsync(token);
         var start = client.Now + 3000000;
         await client.BeginAsync(0x37, start, token); // explicitly exclude R0
         await client.SendAsync(2, token, 0, start + 1000000, 5100,

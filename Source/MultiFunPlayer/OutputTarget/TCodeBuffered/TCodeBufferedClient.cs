@@ -25,6 +25,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     public ulong Boot { get; private set; }
     public ulong Session { get; private set; }
     public ulong[] Status { get; private set; }
+    public TCodeBufferedLimits Limits { get; private set; }
     public double UncertaintyMilliseconds { get; private set; }
     public bool MayOwnMotion => _beginSession.HasValue;
     public static double HostMicroseconds => Stopwatch.GetTimestamp() * (1000000d / Stopwatch.Frequency);
@@ -61,8 +62,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     var start = line.IndexOf("!4,", StringComparison.Ordinal);
                     if (start < 0) continue; // Boot logs and shell prompts are not ACKs.
                     if (!TCodeBufferedProtocol.TryDecode(line[start..], out var fields)
-                        || fields.Length != 22 || fields[0] != 100 || fields[5] > 5
-                        || fields[8] != 512 || fields.Skip(9).Take(6).Any(x => x > 512))
+                        || !ValidReply(fields))
                         throw new InvalidDataException("Invalid TCode 0.4 acknowledgement (format or CRC32).");
                     _replies.Writer.TryWrite(fields);
                 }
@@ -73,9 +73,27 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         finally { _replies.Writer.TryComplete(); }
     }
 
+    private static bool ValidReply(ulong[] fields)
+        => fields.Length >= 6 && fields[5] <= 5 &&
+            ((fields[0] == 100 && fields.Length == 22 && fields[8] == 512
+                && fields.Skip(9).Take(6).All(x => x <= 512))
+            || (fields[0] == 101 && fields.Length == 20));
+
+    public async Task<TCodeBufferedLimits> QueryLimitsAsync(CancellationToken token)
+    {
+        var reply = await TransactAsync(6, token).ConfigureAwait(false);
+        if (reply[2] != Boot || reply[3] != Session)
+            throw new IOException("P4 identity changed while querying motion limits.");
+        if (reply[0] != 101)
+            throw new IOException("P4 does not support motion-limit negotiation. Update the firmware before buffered playback.");
+        return Limits = TCodeBufferedLimits.Decode(reply);
+    }
+
     public async Task<ulong[]> SendAsync(ulong operation, CancellationToken token, params ulong[] args)
     {
         var reply = await TransactAsync(operation, token, args).ConfigureAwait(false);
+        if (reply[0] != 100)
+            throw new InvalidDataException("Expected a P4 status acknowledgement.");
         if (Status != null && reply[2] != Boot)
             throw new IOException("P4 restarted; buffered playback stopped.");
         if (Status != null && operation != 1 && reply[3] != Session)
@@ -92,7 +110,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     private async Task<ulong[]> TransactAsync(ulong operation, CancellationToken token, params ulong[] args)
     {
-        var id = operation == 0 ? ++_query : ++_request;
+        var id = operation is 0 or 6 ? ++_query : ++_request;
         var wire = TCodeBufferedProtocol.Encode(new ulong[] { operation, id, Boot, Session }.Concat(args));
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -141,10 +159,12 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     public async Task BeginAsync(ulong mask, ulong start, CancellationToken token)
     {
+        if (Limits == null)
+            throw new InvalidOperationException("Query device motion limits before BEGIN.");
         // Mark BEFORE sending: a lost BEGIN ACK may still mean the device has
         // accepted a new session. Cleanup queries that session before STOP.
         _beginSession = Session;
-        try { await SendAsync(1, token, mask, start).ConfigureAwait(false); }
+        try { await SendAsync(1, token, mask, start, Limits.Revision, 1).ConfigureAwait(false); }
         catch (TCodeBufferedException) { _beginSession = null; throw; }
     }
 

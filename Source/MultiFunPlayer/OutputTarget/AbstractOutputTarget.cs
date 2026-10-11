@@ -153,6 +153,7 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
                 context.State = status.State;
                 context.ClockUncertaintyMs = status.ClockUncertaintyMs;
                 context.BufferedSeconds = status.BufferedSeconds;
+                context.AmplitudeScale = status.AmplitudeScale;
             });
         try { await playback.RunAsync(token).ConfigureAwait(false); }
         finally

@@ -5,6 +5,8 @@ using MultiFunPlayer.Input.TCode;
 using MultiFunPlayer.Property;
 using MultiFunPlayer.Shortcut;
 using MultiFunPlayer.UI;
+using MultiFunPlayer.UI.Dialogs.ViewModels;
+using System.Text;
 using Newtonsoft.Json.Linq;
 using NLog;
 using Stylet;
@@ -21,6 +23,42 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     : ThreadAbstractOutputTarget(instanceIndex, eventAggregator, valueProvider)
 {
     private CancellationTokenSource _refreshCancellationSource = new();
+    private readonly object _modeLock = new();
+    private CancellationTokenSource _motionCancellation;
+    private SerialPresetSession _presetSession;
+    private bool _serialRunning;
+    public bool IsPresetOpen { get; private set; }
+    public bool CanOpenPresets => IsConnected && !IsPresetOpen;
+
+    public async Task OpenPresets()
+    {
+        if (!CanOpenPresets) return;
+        IsPresetOpen = true;
+        var session = new SerialPresetSession();
+        try
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            lock (_modeLock)
+            {
+                if (!IsConnected || !_serialRunning || _presetSession != null) throw new IOException("串口不可用，请稍后重试。");
+                _presetSession = session;
+                _motionCancellation?.Cancel();
+            }
+            await DialogHelper.ShowAsync(new DevicePresetsDialog(session), "RootDialog");
+        }
+        catch (Exception error)
+        {
+            session.Fail(error);
+            await DialogHelper.ShowErrorAsync(error, "无法打开设备预设", "RootDialog");
+        }
+        finally
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            session.Close();
+            await session.Finished;
+            IsPresetOpen = false;
+        }
+    }
 
     public override ConnectionStatus Status { get; protected set; }
     public bool IsConnected => Status == ConnectionStatus.Connected;
@@ -158,6 +196,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             serialPort = new()
             {
                 PortName = SelectedSerialPort.PortName,
+                Encoding = new UTF8Encoding(false),
                 BaudRate = BaudRate,
                 Parity = Parity,
                 StopBits = StopBits,
@@ -172,6 +211,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             };
 
             serialPort.Open();
+            lock (_modeLock) { _serialRunning = true; }
             Status = ConnectionStatus.Connected;
         }
         catch (Exception e)
@@ -193,82 +233,132 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             EventAggregator.Publish(new SyncRequestMessage());
 
             using var tcodeInputProcessor = inputProcessorFactory.GetInputProcessor<TCodeInputProcessor>();
-            if (UpdateType == DeviceAxisUpdateType.BufferedUpdate)
+            while (!token.IsCancellationRequested && serialPort.IsOpen)
             {
-                BufferedUpdateAsync((wire, ct) =>
+                SerialPresetSession session;
+                CancellationTokenSource motion;
+                lock (_modeLock)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    serialPort.Write(wire);
-                    return Task.CompletedTask;
-                }, async ct =>
+                    session = _presetSession;
+                    motion = session == null ? CancellationTokenSource.CreateLinkedTokenSource(token) : null;
+                    _motionCancellation = motion;
+                }
+                if (session != null)
                 {
-                    while (serialPort.IsOpen)
+                    try
+                    {
+                        session.RunAsync(serialPort.Write, () =>
+                        {
+                            var bytes = new byte[serialPort.BytesToRead];
+                            if (bytes.Length == 0) return bytes;
+                            var count = serialPort.Read(bytes, 0, bytes.Length);
+                            return count == bytes.Length ? bytes : bytes[..count];
+                        }, token).GetAwaiter().GetResult();
+                    }
+                    finally
+                    {
+                        lock (_modeLock) { if (ReferenceEquals(_presetSession, session)) _presetSession = null; }
+                    }
+                }
+                else
+                {
+                    try { RunMotion(motion.Token); }
+                    catch (OperationCanceledException) when (motion.IsCancellationRequested) { }
+                    finally
+                    {
+                        lock (_modeLock) { _motionCancellation = null; motion.Dispose(); }
+                    }
+                }
+            }
+
+            void RunMotion(CancellationToken token)
+            {
+                if (UpdateType == DeviceAxisUpdateType.BufferedUpdate)
+                {
+                    BufferedUpdateAsync((wire, ct) =>
                     {
                         ct.ThrowIfCancellationRequested();
-                        if (serialPort.BytesToRead > 0) return serialPort.ReadExisting();
-                        await Task.Delay(5, ct).ConfigureAwait(false);
-                    }
-                    return null;
-                }, token).GetAwaiter().GetResult();
-            }
-            else if (UpdateType == DeviceAxisUpdateType.FixedUpdate)
-            {
-                var currentValues = DeviceAxis.All.ToDictionary(a => a, _ => double.NaN);
-                var lastSentValues = DeviceAxis.All.ToDictionary(a => a, _ => double.NaN);
-                FixedUpdate<TCodeThreadFixedUpdateContext>(() => !token.IsCancellationRequested && serialPort.IsOpen, (context, elapsed) =>
-                {
-                    Logger.Trace("Begin FixedUpdate [Elapsed: {0}]", elapsed);
-                    GetValues(currentValues);
-
-                    if (serialPort.IsOpen && serialPort.BytesToRead > 0)
-                        ReadExisting();
-
-                    var values = context.SendDirtyValuesOnly ? currentValues.Where(x => DeviceAxis.IsValueDirty(x.Value, lastSentValues[x.Key])) : currentValues;
-                    values = values.Where(x => AxisSettings[x.Key].Enabled);
-
-                    var commands = context.OffloadElapsedTime ? DeviceAxis.ToString(values) : DeviceAxis.ToString(values, elapsed * 1000);
-                    if (serialPort.IsOpen && !string.IsNullOrWhiteSpace(commands))
+                        serialPort.Write(wire);
+                        return Task.CompletedTask;
+                    }, async ct =>
                     {
-                        Logger.Trace("Sending \"{0}\" to \"{1}\"", commands.Trim(), SelectedSerialPortDeviceId);
-
-                        serialPort.Write(commands);
-                        lastSentValues.Merge(values);
-                    }
-                });
-            }
-            else if (UpdateType == DeviceAxisUpdateType.PolledUpdate)
-            {
-                serialPort.DataReceived += OnDataReceived;
-                PolledUpdate(DeviceAxis.All, () => !token.IsCancellationRequested, (_, axis, axisEvent, elapsed) =>
-                {
-                    Logger.Trace("Begin PolledUpdate [Axis: {0}, Event: {1}, Elapsed: {2}]", axis, axisEvent, elapsed);
-
-                    var settings = AxisSettings[axis];
-                    if (!settings.Enabled)
-                        return;
-                    if (!double.IsFinite(axisEvent.TargetValue))
-                        return;
-
-                    var value = MathUtils.Lerp(settings.Minimum, settings.Maximum, axisEvent.TargetValue);
-                    var duration = axisEvent.Duration;
-
-                    var command = DeviceAxis.ToString(axis, value, duration * 1000);
-                    if (serialPort.IsOpen && !string.IsNullOrWhiteSpace(command))
-                    {
-                        Logger.Trace("Sending \"{0}\" to \"{1}\"", command, SelectedSerialPortDeviceId);
-
-                        serialPort.Write($"{command}\n");
-                    }
-                }, token);
-                serialPort.DataReceived -= OnDataReceived;
-
-                void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
-                {
-                    if (!serialPort.IsOpen || e.EventType == SerialData.Eof)
-                        return;
-
-                    ReadExisting();
+                        while (serialPort.IsOpen)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            if (serialPort.BytesToRead > 0) return serialPort.ReadExisting();
+                            await Task.Delay(5, ct).ConfigureAwait(false);
+                        }
+                        return null;
+                    }, token).GetAwaiter().GetResult();
                 }
+                else if (UpdateType == DeviceAxisUpdateType.FixedUpdate)
+                {
+                    var currentValues = DeviceAxis.All.ToDictionary(a => a, _ => double.NaN);
+                    var lastSentValues = DeviceAxis.All.ToDictionary(a => a, _ => double.NaN);
+                    FixedUpdate<TCodeThreadFixedUpdateContext>(() => !token.IsCancellationRequested && serialPort.IsOpen, (context, elapsed) =>
+                    {
+                        Logger.Trace("Begin FixedUpdate [Elapsed: {0}]", elapsed);
+                        GetValues(currentValues);
+
+                        if (serialPort.IsOpen && serialPort.BytesToRead > 0)
+                            ReadExisting();
+
+                        var values = context.SendDirtyValuesOnly ? currentValues.Where(x => DeviceAxis.IsValueDirty(x.Value, lastSentValues[x.Key])) : currentValues;
+                        values = values.Where(x => AxisSettings[x.Key].Enabled);
+
+                        var commands = context.OffloadElapsedTime ? DeviceAxis.ToString(values) : DeviceAxis.ToString(values, elapsed * 1000);
+                        if (serialPort.IsOpen && !string.IsNullOrWhiteSpace(commands))
+                        {
+                            Logger.Trace("Sending \"{0}\" to \"{1}\"", commands.Trim(), SelectedSerialPortDeviceId);
+
+                            serialPort.Write(commands);
+                            lastSentValues.Merge(values);
+                        }
+                    });
+                }
+                else if (UpdateType == DeviceAxisUpdateType.PolledUpdate)
+                {
+                    var receiveLock = new object();
+                    var receiving = true;
+                    serialPort.DataReceived += OnDataReceived;
+                    try { PolledUpdate(DeviceAxis.All, () => !token.IsCancellationRequested, (_, axis, axisEvent, elapsed) =>
+                    {
+                        Logger.Trace("Begin PolledUpdate [Axis: {0}, Event: {1}, Elapsed: {2}]", axis, axisEvent, elapsed);
+
+                        var settings = AxisSettings[axis];
+                        if (!settings.Enabled)
+                            return;
+                        if (!double.IsFinite(axisEvent.TargetValue))
+                            return;
+
+                        var value = MathUtils.Lerp(settings.Minimum, settings.Maximum, axisEvent.TargetValue);
+                        var duration = axisEvent.Duration;
+
+                        var command = DeviceAxis.ToString(axis, value, duration * 1000);
+                        if (serialPort.IsOpen && !string.IsNullOrWhiteSpace(command))
+                        {
+                            Logger.Trace("Sending \"{0}\" to \"{1}\"", command, SelectedSerialPortDeviceId);
+
+                            serialPort.Write($"{command}\n");
+                        }
+                    }, token); }
+                    finally
+                    {
+                        serialPort.DataReceived -= OnDataReceived;
+                        lock (receiveLock) { receiving = false; }
+                    }
+
+                    void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
+                    {
+                        lock (receiveLock)
+                        {
+                            if (!receiving || token.IsCancellationRequested || !serialPort.IsOpen || e.EventType == SerialData.Eof)
+                                return;
+                            ReadExisting();
+                        }
+                    }
+                }
+
             }
 
             void ReadExisting()
@@ -281,10 +371,17 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
         catch (Exception e) when (e is TimeoutException or IOException)
         {
             Logger.Error(e, $"{Identifier} failed with exception");
-            _ = DialogHelper.ShowErrorAsync(e, $"{Identifier} failed with exception", "RootDialog");
+            if (!IsPresetOpen)
+                _ = DialogHelper.ShowErrorAsync(e, $"{Identifier} failed with exception", "RootDialog");
         }
         catch (Exception e) { Logger.Error(e, $"{Identifier} failed with exception"); }
 
+        lock (_modeLock)
+        {
+            _serialRunning = false;
+            _presetSession?.Fail(new IOException("串口已断开，预设操作未完成。"));
+            _presetSession = null;
+        }
         try { serialPort?.Dispose(); }
         catch { }
     }

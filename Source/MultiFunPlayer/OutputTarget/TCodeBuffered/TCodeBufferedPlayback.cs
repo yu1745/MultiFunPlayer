@@ -3,7 +3,7 @@ using System.IO;
 
 namespace MultiFunPlayer.OutputTarget.TCodeBuffered;
 
-internal sealed record BufferedPlaybackStatus(string State, double ClockUncertaintyMs = 0, double BufferedSeconds = 0);
+internal sealed record BufferedPlaybackStatus(string State, double ClockUncertaintyMs = 0, double BufferedSeconds = 0, double AmplitudeScale = 1);
 
 internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
     Func<BufferedPlaybackSnapshot> snapshot, Action<bool> setPlaying,
@@ -72,11 +72,15 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         var source = snapshot();
         if (controlRevision() != controls) { RestartPreparation(); return; }
         // Validate the complete trajectory before BEGIN acquires motion.
-        var nodes = TCodeBufferedPlan.Create(source, 0);
-        var mask = (ulong)nodes.Select((p, i) => p.Count > 0 ? 1 << i : 0).Aggregate((a, b) => a | b);
         await client.SynchronizeAsync(token).ConfigureAwait(false);
         if (client.Status[5] is 1 or 2 or 3)
             throw new IOException("P4 already has an active trajectory.");
+
+        report(new("Reading device motion limits", client.UncertaintyMilliseconds));
+        var limits = await client.QueryLimitsAsync(token).ConfigureAwait(false);
+        var plan = TCodeBufferedPlan.CreateLimited(source, limits);
+        var nodes = plan.Nodes;
+        var mask = (ulong)nodes.Select((p, i) => p.Count > 0 ? 1 << i : 0).Aggregate((a, b) => a | b);
 
         ulong start;
         deadline = TCodeBufferedClient.HostMicroseconds + 5000000;
@@ -88,22 +92,31 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             catch (TCodeBufferedException e) when (e.Code == 8 && TCodeBufferedClient.HostMicroseconds < deadline)
             { await Task.Delay(100, token).ConfigureAwait(false); }
         }
-        var epoch = start + 1000000;
+        var epoch = start + plan.PositioningMicroseconds;
         // Keep the validated relative node times; do not recompute from a later
         // media snapshot after the common start time has been chosen.
         for (var axis = 0; axis < 6; axis++)
             for (var i = 0; i < nodes[axis].Count; i++)
-                nodes[axis][i] = nodes[axis][i] with { Microseconds = checked(nodes[axis][i].Microseconds + epoch) };
+                nodes[axis][i] = nodes[axis][i] with { Microseconds = checked(nodes[axis][i].Microseconds + start) };
         var cursor = new int[6];
         var sealedAxes = new bool[6];
-        report(new("Preloading", client.UncertaintyMilliseconds));
+        report(new("Preloading", client.UncertaintyMilliseconds, AmplitudeScale: plan.AmplitudeScale));
         if (!await RefillAsync(ChangedWhilePreparing).ConfigureAwait(false)) { await StopAsync(); RestartPreparation(); return; }
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
         await client.SendAsync(4, token).ConfigureAwait(false);
-        report(new("Positioning", client.UncertaintyMilliseconds));
+        report(new("Positioning", client.UncertaintyMilliseconds, AmplitudeScale: plan.AmplitudeScale));
+        var nextPositioningRefill = 0UL;
         while (client.Now < epoch)
         {
             if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
+            if (client.Now >= nextPositioningRefill)
+            {
+                await client.SendAsync(0, token).ConfigureAwait(false);
+                if (client.Status[5] is not (2 or 3 or 4))
+                    throw new IOException("P4 positioning stopped or configuration changed.");
+                if (!await RefillAsync(ChangedWhilePreparing).ConfigureAwait(false)) { await StopAsync(); RestartPreparation(); return; }
+                nextPositioningRefill = client.Now + 200000;
+            }
             await Task.Delay(10, token).ConfigureAwait(false);
         }
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
@@ -135,7 +148,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                     break;
                 var tails = nodes.Select((p, i) => p.Count > 0 && !sealedAxes[i] ? client.Status[15 + i] : ulong.MaxValue).ToArray();
                 var buffered = tails.Min() == ulong.MaxValue ? 0 : Math.Max(0, ((double)tails.Min() - client.Now) / 1000000);
-                report(new(client.Status[5] == 4 ? "Complete (holding)" : "Playing", client.UncertaintyMilliseconds, buffered));
+                report(new(client.Status[5] == 4 ? "Complete (holding)" : "Playing", client.UncertaintyMilliseconds, buffered, plan.AmplitudeScale));
                 nextRefill = client.Now + 200000;
             }
             await Task.Delay(20, token).ConfigureAwait(false);

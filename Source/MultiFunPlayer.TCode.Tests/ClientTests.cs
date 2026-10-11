@@ -22,6 +22,7 @@ public class ClientTests
         var link = new FakeLink();
         await using var client = link.Client();
         await client.SendAsync(0, CancellationToken.None);
+        await client.QueryLimitsAsync(CancellationToken.None);
         link.DropWrites = 3;
         await Assert.ThrowsAsync<IOException>(() => client.BeginAsync(1, 4000000, CancellationToken.None));
         Assert.True(client.MayOwnMotion);
@@ -50,6 +51,7 @@ public class ClientTests
         var link = new FakeLink();
         await using var client = link.Client();
         await client.SendAsync(0, CancellationToken.None);
+        await client.QueryLimitsAsync(CancellationToken.None);
         await client.BeginAsync(1, 4000000, CancellationToken.None);
         link.CorruptReplies = true;
         await Assert.ThrowsAnyAsync<Exception>(() => client.SendAsync(0, CancellationToken.None));
@@ -95,6 +97,9 @@ public class ClientTests
             if (DropWrites > 0) { DropWrites--; return Task.CompletedTask; }
             ulong[] reply = [100, WrongRequestId ? f[1] + 1 : f[1], Boot, Session, 0, State, 1000000, 1, 512,
                 512, 512, 512, 512, 512, 512, 0, 0, 0, 0, 0, 0, 0];
+            if (f[0] == 6)
+                reply = [101, f[1], Boot, Session, 0, State, 1, 1, 1000000, 4000000, 20000000,
+                    1000000, 4000000, 20000000, 500000, 500000, 500000, 500000, 500000, 500000];
             var response = TCodeBufferedProtocol.Encode(reply);
             if (CorruptReplies) response = response.Replace("!4,100,", "!4,101,");
             if (FragmentReplies)
