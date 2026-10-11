@@ -1,0 +1,19 @@
+<UserControl x:Class="MultiFunPlayer.UI.Dialogs.Views.MpvDownloadDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:s="https://github.com/canton7/Stylet"
+             x:ClassModifier="internal">
+    <StackPanel Width="540" Margin="24">
+        <TextBlock Text="下载 MPV" FontSize="22" Margin="0 0 0 12" />
+        <TextBlock Text="AMD64 v3 · 每周版 · 包含 FFmpeg" Opacity="0.7" Margin="0 0 0 16" />
+        <TextBlock Text="{Binding Status}" TextWrapping="Wrap" MaxHeight="70" Margin="0 0 0 12" />
+        <ProgressBar Height="5" IsIndeterminate="{Binding IsBusy}" Margin="0 0 0 8" />
+        <TextBlock Text="{Binding ProgressText}" Margin="0 0 0 12" />
+        <TextBox Text="{Binding Log, Mode=OneWay}" IsReadOnly="True" Height="230"
+                 TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0 16 0 0">
+            <Button Content="重试" Command="{s:Action OnRetry}" IsEnabled="{Binding CanRetry}" Margin="0 0 8 0" />
+            <Button Content="关闭" Command="{s:Action OnDismiss}" IsEnabled="{Binding CanDismiss}" />
+        </StackPanel>
+    </StackPanel>
+</UserControl>

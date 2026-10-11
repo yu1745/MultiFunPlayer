@@ -13,7 +13,8 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.IO.Pipes;
-using System.Windows;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace MultiFunPlayer.MediaSource.ViewModels;
 
@@ -60,12 +61,8 @@ internal sealed class MpvMediaSource(IShortcutManager shortcutManager, IProperty
             }
             else
             {
-                var result = await DialogHelper.ShowAsync<MessageBoxResult>(new MessageBoxDialog("Mpv executable not found!\nWould you like to download it now?", MessageBoxButton.YesNo), "RootDialog");
-                if (result != MessageBoxResult.Yes)
-                    throw new MediaSourceException("Could not find mpv executable! Set path to mpv.exe manually or download latest release from settings.");
-
-                _ = Task.Run(OnDownloadExecutable);
-                return false;
+                await DownloadExecutableAsync();
+                return Executable?.AsRefreshed().Exists == true;
             }
         }
 
@@ -286,13 +283,34 @@ internal sealed class MpvMediaSource(IShortcutManager shortcutManager, IProperty
     }
 
     public bool IsDownloading { get; private set; }
-    public async void OnDownloadExecutable()
-    {
-        IsDownloading = true;
-        Executable = null;
+    public async void OnDownloadExecutable() => await DownloadExecutableAsync();
 
+    private async Task DownloadExecutableAsync()
+    {
+        if (IsDownloading)
+            return;
+
+        IsDownloading = true;
         try
         {
+            await DialogHelper.ShowAsync(new MpvDownloadDialog(DownloadExecutableCoreAsync), "RootDialog");
+        }
+        catch (Exception e)
+        {
+            Logger.Error(e, "Could not show mpv download dialog");
+        }
+        finally
+        {
+            IsDownloading = false;
+        }
+    }
+
+    private async Task DownloadExecutableCoreAsync(MpvDownloadDialog dialog)
+    {
+        Executable = null;
+        try
+        {
+            dialog.Report("正在下载 MPV 安装工具…");
             var downloadRoot = new DirectoryInfo(Path.Combine(Path.GetDirectoryName(Environment.ProcessPath), "bin", "mpv"));
             if (downloadRoot.Exists)
                 downloadRoot.Delete(true);
@@ -303,30 +321,94 @@ internal sealed class MpvMediaSource(IShortcutManager shortcutManager, IProperty
 
             {
                 using var client = NetUtils.CreateHttpClient();
-                await client.DownloadFileAsync(bootstrapperUri, bootstrapperZip.FullName);
+                dialog.BeginDownload("bootstrapper.zip");
+                var bootstrapDownload = client.DownloadFileAsync(bootstrapperUri, bootstrapperZip.FullName);
+                while (!bootstrapDownload.IsCompleted)
+                {
+                    dialog.UpdateDownloadProgress(downloadRoot.FullName);
+                    await Task.WhenAny(bootstrapDownload, Task.Delay(500));
+                }
+                await bootstrapDownload;
             }
 
+            dialog.Report("Extracting bootstrapper.zip");
             ZipFile.ExtractToDirectory(bootstrapperZip.FullName, downloadRoot.FullName, true);
             bootstrapperZip.Delete();
+            dialog.Report("正在获取 MPV 和 FFmpeg 下载信息…");
 
-            var updater = new FileInfo(Path.Combine(downloadRoot.FullName, "updater.bat"));
+            await File.WriteAllTextAsync(Path.Combine(downloadRoot.FullName, "settings.xml"), """
+                <settings>
+                  <channel>weekly</channel>
+                  <arch>x86_64-v3</arch>
+                  <autodelete>true</autodelete>
+                  <getffmpeg>true</getffmpeg>
+                </settings>
+                """);
+
+            var updaterPath = Path.Combine(downloadRoot.FullName, "installer", "updater.ps1");
+            if (!File.Exists(updaterPath))
+                updaterPath = Path.Combine(downloadRoot.FullName, "updater.ps1");
+
+            // The upstream updater has no setting to disable its YouTube plugin prompt.
+            // Remove only the entry-point call, preserving the rest of the updater.
+            var updaterScript = await File.ReadAllTextAsync(updaterPath);
+            var youtubeUpdate = new Regex(@"(?m)^[ \t]*Upgrade-Ytplugin[ \t]*\r?$");
+            if (youtubeUpdate.Matches(updaterScript).Count != 1)
+                throw new InvalidOperationException("Unsupported mpv updater: could not disable YouTube plugin downloads.");
+
+            updaterScript = youtubeUpdate.Replace(updaterScript, "");
+            // Initial mpv installation also asks for confirmation outside settings.xml.
+            var promptFunction = new Regex(@"(?ms)^function Read-KeyOrTimeout\b.*?^}");
+            if (promptFunction.Matches(updaterScript).Count != 1)
+                throw new InvalidOperationException("Unsupported mpv updater: could not disable interactive prompts.");
+            updaterScript = promptFunction.Replace(updaterScript,
+                _ => "function Read-KeyOrTimeout ($prompt, $key) { return $key.ToString() }");
+            updaterScript = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" + updaterScript;
+            await File.WriteAllTextAsync(updaterPath, updaterScript, new UTF8Encoding(true));
             using var process = new Process
             {
                 StartInfo =
                     {
-                        FileName = updater.FullName,
-                        UseShellExecute = true
+                        FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
+                        WorkingDirectory = downloadRoot.FullName,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8
                     },
                 EnableRaisingEvents = true
             };
 
-            var completionSource = new TaskCompletionSource<int>();
-            process.Exited += (s, e) => completionSource.SetResult(process.ExitCode);
+            foreach (var argument in new[] { "-NoProfile", "-NoLogo", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", updaterPath })
+                process.StartInfo.ArgumentList.Add(argument);
             process.Start();
 
-            var result = await completionSource.Task;
-            if (result == 0)
-                Executable = new FileInfo(Path.Combine(downloadRoot.FullName, "mpv.exe"));
+            async Task ReadOutputAsync(StreamReader reader)
+            {
+                while (await reader.ReadLineAsync() is { } line)
+                    dialog.Report(line);
+            }
+
+            var output = ReadOutputAsync(process.StandardOutput);
+            var error = ReadOutputAsync(process.StandardError);
+            var completion = process.WaitForExitAsync();
+            while (!completion.IsCompleted)
+            {
+                dialog.UpdateDownloadProgress(downloadRoot.FullName);
+                await Task.WhenAny(completion, Task.Delay(500));
+            }
+            await completion;
+            await Task.WhenAll(output, error);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"Mpv updater failed with exit code {process.ExitCode}.");
+
+            var executable = new FileInfo(Path.Combine(downloadRoot.FullName, "mpv.exe"));
+            if (!executable.Exists || !File.Exists(Path.Combine(downloadRoot.FullName, "ffmpeg.exe")))
+                throw new FileNotFoundException("Mpv updater did not install mpv.exe and ffmpeg.exe.");
+
+            Executable = executable;
 
             foreach (var file in downloadRoot.EnumerateFiles("mpv*.7z"))
                 file.Delete();
@@ -337,10 +419,8 @@ internal sealed class MpvMediaSource(IShortcutManager shortcutManager, IProperty
         catch (Exception e)
         {
             Logger.Error(e, $"{Name} executable download failed with exception");
-            _ = DialogHelper.ShowErrorAsync(e, $"{Name} executable download failed with exception", "RootDialog");
+            throw;
         }
-
-        IsDownloading = false;
     }
 
     protected override void RegisterActions(IShortcutManager s)
