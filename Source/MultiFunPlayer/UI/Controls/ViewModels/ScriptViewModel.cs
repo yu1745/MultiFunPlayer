@@ -41,6 +41,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
     private Thread _updateThread;
     private CancellationTokenSource _cancellationSource;
     private double _internalMediaPosition;
+    private long _bufferedTimelineRevision;
 
     public bool IsPlaying { get; private set; }
     public double PlaybackSpeed { get; private set; }
@@ -557,6 +558,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         if (MediaResource == resource)
             return;
 
+        Interlocked.Increment(ref _bufferedTimelineRevision);
         MediaResource = resource;
         if (SyncSettings.SyncOnMediaResourceChanged)
             ResetSync(true);
@@ -751,6 +753,31 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
 
     private double GetAxisPosition(DeviceAxis axis) => MediaPosition - GlobalOffset - AxisSettings[axis].Offset;
     public double GetValue(DeviceAxis axis) => MathUtils.Clamp01(AxisStates[axis].Value);
+
+    public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot()
+    {
+        var axes = new List<BufferedScriptAxis>();
+        foreach (var axis in DeviceAxis.All)
+        {
+            var settings = AxisSettings[axis];
+            var keyframes = AxisKeyframes[axis];
+            if (settings.BypassScript || keyframes == null || keyframes.Count == 0)
+                continue;
+
+            // Live modifiers cannot be predicted several seconds ahead. Do not
+            // silently bypass a configured limit when switching update types.
+            var unsupported = settings.SpeedLimitEnabled ? "script speed limit"
+                : settings.SmartLimitInputAxis != null ? "smart limit"
+                : !settings.BypassMotionProvider && settings.SelectedMotionProvider != null
+                    && (settings.MotionProviderBlend > 0 || settings.MotionProviderFillGaps) ? "motion provider blending"
+                : null;
+            axes.Add(new(axis.Name, keyframes, GlobalOffset + settings.Offset,
+                settings.ScriptScale, settings.InvertScript, axis.DefaultValue,
+                UnsupportedReason: unsupported));
+        }
+        return new(IsPlaying, MediaPosition, PlaybackSpeed,
+            Interlocked.Read(ref _bufferedTimelineRevision), axes);
+    }
 
     public void BeginEventPolling(object context)
     {
@@ -1029,6 +1056,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
 
     private void SetMediaPositionInternal(double position)
     {
+        Interlocked.Increment(ref _bufferedTimelineRevision);
         MediaPosition = position;
         _internalMediaPosition = position;
 

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" PrivateAssets="all" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <!-- Exercise the production protocol/planner on Linux as well as Windows,
+       without requiring the WPF desktop runtime. -->
+  <ItemGroup>
+    <Compile Include="../MultiFunPlayer/Common/Keyframe.cs" Link="Production/Keyframe.cs" />
+    <Compile Include="../MultiFunPlayer/Common/BufferedPlaybackSnapshot.cs" Link="Production/BufferedPlaybackSnapshot.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedProtocol.cs" Link="Production/TCodeBufferedProtocol.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlan.cs" Link="Production/TCodeBufferedPlan.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedClient.cs" Link="Production/TCodeBufferedClient.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlayback.cs" Link="Production/TCodeBufferedPlayback.cs" />
+  </ItemGroup>
+</Project>

@@ -1,5 +1,6 @@
-﻿using MultiFunPlayer.Common;
+using MultiFunPlayer.Common;
 using MultiFunPlayer.Input;
+using MultiFunPlayer.OutputTarget.TCodeBuffered;
 using MultiFunPlayer.Property;
 using MultiFunPlayer.Shortcut;
 using MultiFunPlayer.UI;
@@ -137,6 +138,40 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
 
             var settings = AxisSettings[axis];
             values[axis] = MathUtils.Lerp(settings.Minimum, settings.Maximum, value);
+        }
+    }
+
+    protected async Task BufferedUpdateAsync(Func<string, CancellationToken, Task> write,
+        Func<CancellationToken, Task<string>> read, CancellationToken token)
+    {
+        var context = (TCodeBufferedUpdateContext)UpdateContexts[DeviceAxisUpdateType.BufferedUpdate];
+        using var control = new BufferedMediaControl(EventAggregator);
+        await using var client = new TCodeBufferedClient(write, read);
+        var playback = new TCodeBufferedPlayback(client, GetSnapshot, control.SetPlaying,
+            () => control.Revision, () => control.WantsPlayback, status =>
+            {
+                context.State = status.State;
+                context.ClockUncertaintyMs = status.ClockUncertaintyMs;
+                context.BufferedSeconds = status.BufferedSeconds;
+            });
+        try { await playback.RunAsync(token).ConfigureAwait(false); }
+        finally
+        {
+            if (!context.State.StartsWith("Error:") && context.State != "STOP not acknowledged")
+                context.State = "Disconnected";
+        }
+
+        BufferedPlaybackSnapshot GetSnapshot()
+        {
+            var source = _valueProvider.GetBufferedPlaybackSnapshot();
+            var axes = source.Axes.Where(a => TCodeBufferedPlan.AxisNames.Contains(a.Name))
+                .Where(a => DeviceAxis.TryParse(a.Name, out var axis) && AxisSettings[axis].Enabled)
+                .Select(a =>
+                {
+                    var settings = AxisSettings[DeviceAxis.Parse(a.Name)];
+                    return a with { Minimum = settings.Minimum, Maximum = settings.Maximum };
+                }).ToArray();
+            return source with { Axes = axes };
         }
     }
 

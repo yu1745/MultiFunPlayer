@@ -85,3 +85,10 @@ internal sealed class TCodeAsyncFixedUpdateContext : AsyncFixedUpdateContext
     [JsonProperty] public bool OffloadElapsedTime { get; set; } = false;
     [JsonProperty] public bool SendDirtyValuesOnly { get; set; } = true;
 }
+[JsonObject(MemberSerialization = MemberSerialization.OptIn)]
+internal sealed class TCodeBufferedUpdateContext : PropertyChangedBase, IUpdateContext
+{
+    public string State { get; set; } = "Disconnected";
+    public double ClockUncertaintyMs { get; set; }
+    public double BufferedSeconds { get; set; }
+}

@@ -1,4 +1,4 @@
-﻿using Microsoft.Win32;
+using Microsoft.Win32;
 using MultiFunPlayer.Common;
 using MultiFunPlayer.Input;
 using MultiFunPlayer.Input.TCode;
@@ -53,6 +53,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     {
         DeviceAxisUpdateType.FixedUpdate => new TCodeThreadFixedUpdateContext(),
         DeviceAxisUpdateType.PolledUpdate => new ThreadPolledUpdateContext(),
+        DeviceAxisUpdateType.BufferedUpdate => new TCodeBufferedUpdateContext(),
         _ => null,
     };
 
@@ -192,7 +193,25 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             EventAggregator.Publish(new SyncRequestMessage());
 
             using var tcodeInputProcessor = inputProcessorFactory.GetInputProcessor<TCodeInputProcessor>();
-            if (UpdateType == DeviceAxisUpdateType.FixedUpdate)
+            if (UpdateType == DeviceAxisUpdateType.BufferedUpdate)
+            {
+                BufferedUpdateAsync((wire, ct) =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    serialPort.Write(wire);
+                    return Task.CompletedTask;
+                }, async ct =>
+                {
+                    while (serialPort.IsOpen)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (serialPort.BytesToRead > 0) return serialPort.ReadExisting();
+                        await Task.Delay(5, ct).ConfigureAwait(false);
+                    }
+                    return null;
+                }, token).GetAwaiter().GetResult();
+            }
+            else if (UpdateType == DeviceAxisUpdateType.FixedUpdate)
             {
                 var currentValues = DeviceAxis.All.ToDictionary(a => a, _ => double.NaN);
                 var lastSentValues = DeviceAxis.All.ToDictionary(a => a, _ => double.NaN);

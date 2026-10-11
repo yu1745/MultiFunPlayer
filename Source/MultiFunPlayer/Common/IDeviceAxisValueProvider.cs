@@ -1,14 +1,16 @@
-﻿namespace MultiFunPlayer.Common;
+namespace MultiFunPlayer.Common;
 
 internal enum DeviceAxisUpdateType
 {
     FixedUpdate,
-    PolledUpdate
+    PolledUpdate,
+    BufferedUpdate
 }
 
 internal interface IDeviceAxisValueProvider
 {
     public double GetValue(DeviceAxis axis);
+    public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot();
 
     public void BeginEventPolling(object context);
     public void EndEventPolling(object context);
