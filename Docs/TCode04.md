@@ -92,3 +92,43 @@ It substitutes a monotonic host clock and ready/settled simulated motors. It doe
 not test a physical serial driver, C3 wireless transport, Windows UI, media-player
 command latency or actual motor feedback. Firmware integration tests are skipped
 when `CTW_TCODE_HARNESS` is not configured.
+
+## Native P4 end-to-end validation (2026-10-12)
+
+The current CTW firmware requires operation 6 capabilities negotiation. MFP now
+reads the device's translation/rotation V/A/J limits, profile and configuration
+revision, and includes revision/profile in BEGIN. The existing limit-aware
+planner reduces over-limit script amplitudes while retaining the media timeline,
+and selects a feasible positioning duration before acquiring motion. Unsupported
+profiles or invalid trajectories fail with an explanation. The firmware performs
+its own independent checks and invalidates trajectories when its limits change.
+Older CTW firmware without this negotiation is not supported by this sender.
+
+With a sibling CTW checkout containing `test/p4_native`, run:
+
+```sh
+scripts/test-native-p4.sh ../ctw_esp32s3_0909
+# If dotnet is outside PATH:
+DOTNET=/path/to/dotnet scripts/test-native-p4.sh ../ctw_esp32s3_0909
+```
+
+This builds the actual P4 UART reader and timed-command/trajectory processing
+sources on x86, runs deterministic native scenarios, and runs the C# tests against
+that process through stdin/stdout as simulated serial transport. Hardware time,
+queue/task hosting and motor readiness are substituted. The test records the
+production smoother's six-axis outputs every simulated millisecond, checks them
+against transmitted nodes, exercises fragmented input and lost BEGIN ACKs, and
+checks that over-limit scripts are reduced before the native device executes motion.
+
+Results are retained under
+`Source/MultiFunPlayer.TCode.Tests/TestResults/native-p4/` as a TRX report,
+trajectory CSVs and `.wire` request traces. `CTW_NATIVE_P4` enables the additional
+trace-based tests; `CTW_TCODE_HARNESS` can also point to this process for the
+existing playback integration tests. Without those environment variables, the
+corresponding tests are explicitly skipped. The wrapper sets both, so the full
+suite must run without skips.
+
+This native test covers reception through six-axis timed reference processing.
+It does not cover the physical serial/C3 drivers, full FreeRTOS scheduling,
+IK/CAN/motor output, Windows UI or actual media players. See CTW's
+`test/p4_native/README.md` for the exact platform substitutions.

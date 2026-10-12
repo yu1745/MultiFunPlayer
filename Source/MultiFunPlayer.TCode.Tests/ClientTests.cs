@@ -6,6 +6,33 @@ namespace MultiFunPlayer.TCode.Tests;
 public class ClientTests
 {
     [Fact]
+    public async Task CapabilitiesBindBeginWithoutAdvancingMutationSequence()
+    {
+        var link = new FakeLink();
+        await using var client = link.Client();
+        await client.SendAsync(0, CancellationToken.None);
+        var limits = await client.QueryLimitsAsync(CancellationToken.None);
+        Assert.Equal(new BufferedAxisLimits(1, 4, 20), limits.Translation);
+        Assert.Equal(new BufferedAxisLimits(1, 4, 20), limits.Rotation);
+        Assert.All(limits.Positions, position => Assert.Equal(.5, position));
+        Assert.Equal(22, client.Status.Length);
+        await client.BeginAsync(1, 4000000, CancellationToken.None);
+        Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1], out var begin));
+        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 1, 1 }, begin);
+    }
+
+    [Fact]
+    public async Task UnsupportedProfileFailsBeforeAcquiringDeviceMotion()
+    {
+        var link = new FakeLink { Profile = 2 };
+        await using var client = link.Client();
+        await client.SendAsync(0, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.QueryLimitsAsync(CancellationToken.None));
+        Assert.False(client.MayOwnMotion);
+        Assert.Equal(0UL, link.Session);
+    }
+
+    [Fact]
     public async Task LostAckRetriesIdenticalFrameAndAcceptsFragmentedReply()
     {
         var link = new FakeLink { DropWrites = 1, FragmentReplies = true };
@@ -81,6 +108,7 @@ public class ClientTests
         public bool FragmentReplies { get; set; }
         public bool CorruptReplies { get; set; }
         public bool WrongRequestId { get; set; }
+        public ulong Profile { get; set; } = 1;
         public TCodeBufferedClient Client() => new(Write, async ct => await _received.Reader.ReadAsync(ct), TimeSpan.FromMilliseconds(25));
 
         private Task Write(string wire, CancellationToken token)
@@ -98,7 +126,7 @@ public class ClientTests
             ulong[] reply = [100, WrongRequestId ? f[1] + 1 : f[1], Boot, Session, 0, State, 1000000, 1, 512,
                 512, 512, 512, 512, 512, 512, 0, 0, 0, 0, 0, 0, 0];
             if (f[0] == 6)
-                reply = [101, f[1], Boot, Session, 0, State, 1, 1, 1000000, 4000000, 20000000,
+                reply = [101, f[1], Boot, Session, 0, State, 1, Profile, 1000000, 4000000, 20000000,
                     1000000, 4000000, 20000000, 500000, 500000, 500000, 500000, 500000, 500000];
             var response = TCodeBufferedProtocol.Encode(reply);
             if (CorruptReplies) response = response.Replace("!4,100,", "!4,101,");

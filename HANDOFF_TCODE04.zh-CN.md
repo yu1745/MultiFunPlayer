@@ -5,7 +5,7 @@
 本次已为 MultiFunPlayer 添加第三种更新类型 **Buffered Update**，对接本地
 `ctw_esp32s3_0909` 的 TCode 0.4 时间缓冲协议。按用户最新要求，**仅 Serial
 提供该选项**；TCP、WebSocket、UDP、Pipe 均未接入。原 Fixed Update / Polled Update
-保留。修改尚未提交 Git，也未推送远端。
+保留。源码状态与发布位置以当前 Git 提交及远程分支为准。
 
 上游：`https://github.com/Yoooi0/MultiFunPlayer`
 
@@ -21,7 +21,7 @@
 - `Source/MultiFunPlayer.TCode.Tests/`：不依赖 WPF 的协议及播放测试项目。
 - `Docs/TCode04.md`：详细使用说明和协议行为。
 - `Docs/TCode04-validation/`：本次测试、构建和发布日志。
-- `.git/`：保留 Git 历史及当前未提交的修改，便于查看 diff；GitVersion 构建也需要它。
+- `.git/`：保留 Git 历史及源码，便于查看 diff；GitVersion 构建也需要它。
 
 桌面副本不包含 Linux 的 `obj`、常规 `bin` 构建缓存；Windows 发布文件单独放在
 `Windows-Release`。这些文件属于运行产物，不要作为源码提交。
@@ -128,3 +128,21 @@ Windows WPF 界面、真实 COM 驱动、C3 无线转发、实际媒体播放器
 先记录媒体源类型、播放倍速、串口配置、错误信息及时间轴，定位时钟/控制延迟。
 
 应用日志在可执行文件所在目录的 `Logs/application.log`。本次没有修改或烧录固件。
+
+
+## Native P4 E2E 集成（2026-10-12）
+
+入口：`scripts/test-native-p4.sh ../ctw_esp32s3_0909`。需要 .NET 9、CMake、
+Ninja、C++17 编译器；dotnet 不在 PATH 时设置 `DOTNET`。
+
+集成保留 fork 中已有的运动限制自动缩幅/就位规划、串口设备预设和 MPV 下载功能。
+新增测试让 MFP 通过分片模拟串口连接 CTW 真实 UART 接收任务和轨迹处理代码，
+验证六轴 1 kHz 输出、超限脚本缩幅、丢失 BEGIN ACK 重试。硬件时钟、任务/队列
+宿主和电机就绪反馈由 x86 适配器替代；不覆盖 IK、CAN、电机执行和真实驱动。
+
+TRX 报告、CSV 轨迹和请求记录保存在
+`Source/MultiFunPlayer.TCode.Tests/TestResults/native-p4/`，属于 Git 忽略的运行产物。
+本轮没有烧录或实机测试。
+
+整合后的验证结果：CTW native 9/9、MFP 38/38 通过，0 跳过；Windows Release
+交叉编译通过（0 errors，现有插件 Assembly.Location 用法有 4 条 IL3000 warnings）。
