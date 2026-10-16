@@ -153,7 +153,13 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
                 context.State = status.State;
                 context.ClockUncertaintyMs = status.ClockUncertaintyMs;
                 context.BufferedSeconds = status.BufferedSeconds;
-                context.AmplitudeScale = status.AmplitudeScale;
+                if (status.Limits != null)
+                {
+                    var t = status.Limits.Translation;
+                    var r = status.Limits.Rotation;
+                    context.TranslationLimits = FormattableString.Invariant($"{t.Velocity:G5} / {t.Acceleration:G5} / {t.Jerk:G5}");
+                    context.RotationLimits = FormattableString.Invariant($"{r.Velocity:G5} / {r.Acceleration:G5} / {r.Jerk:G5}");
+                }
             });
         try { await playback.RunAsync(token).ConfigureAwait(false); }
         finally

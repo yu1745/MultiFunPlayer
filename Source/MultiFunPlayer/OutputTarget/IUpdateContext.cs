@@ -91,5 +91,6 @@ internal sealed class TCodeBufferedUpdateContext : PropertyChangedBase, IUpdateC
     public string State { get; set; } = "Disconnected";
     public double ClockUncertaintyMs { get; set; }
     public double BufferedSeconds { get; set; }
-    public double AmplitudeScale { get; set; } = 1;
+    public string TranslationLimits { get; set; } = "—";
+    public string RotationLimits { get; set; } = "—";
 }

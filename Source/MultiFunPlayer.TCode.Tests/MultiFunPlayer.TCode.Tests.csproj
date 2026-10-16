@@ -18,7 +18,7 @@
     <Compile Include="../MultiFunPlayer/Common/BufferedPlaybackSnapshot.cs" Link="Production/BufferedPlaybackSnapshot.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedProtocol.cs" Link="Production/TCodeBufferedProtocol.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlan.cs" Link="Production/TCodeBufferedPlan.cs" />
-    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedLimits.cs" Link="Production/TCodeBufferedLimits.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/BufferedSessionLimits.cs" Link="Production/BufferedSessionLimits.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedClient.cs" Link="Production/TCodeBufferedClient.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlayback.cs" Link="Production/TCodeBufferedPlayback.cs" />
   </ItemGroup>

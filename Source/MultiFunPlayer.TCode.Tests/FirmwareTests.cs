@@ -19,26 +19,26 @@ public sealed class FirmwareFactAttribute : FactAttribute
 public class FirmwareTests
 {
     [FirmwareFact]
-    public async Task HostShrinksTimelineAndDeviceIndependentlyRejectsUnsafeBatch()
+    public async Task HostKeepsFullScriptAndDeviceEnforcesSessionEnvelope()
     {
         using var firmware = new Firmware();
         await using var client = firmware.Client();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var token = timeout.Token;
         await client.SynchronizeAsync(token);
-        var limits = await client.QueryLimitsAsync(token);
-        var plan = TCodeBufferedPlan.CreateLimited(ProtocolAndPlanTests.Snapshot([new(0, 0), new(.2, 1), new(.4, 0)]), limits);
-        Assert.InRange(plan.AmplitudeScale, 0, .01);
+        var pose = await client.QueryPoseAsync(token);
+        var plan = TCodeBufferedPlan.CreateSession(ProtocolAndPlanTests.Snapshot([new(0, 0), new(.2, 1), new(.4, 0)]), pose);
+        Assert.Equal(9999UL, plan.Nodes[0][1].Position);
         var start = client.Now + 3000000;
-        await client.BeginAsync(1, start, token);
+        await client.BeginAsync(1, start, plan.Limits, token);
         foreach (var node in plan.Nodes[0])
             await client.SendAsync(2, token, 0, start + node.Microseconds, node.Position);
         await client.SendAsync(3, token, 1);
         await client.SendAsync(4, token);
         await client.StopAsync(token);
-        await client.QueryLimitsAsync(token);
+        await client.QueryPoseAsync(token);
         start = client.Now + 3000000;
-        await client.BeginAsync(1, start, token);
+        await client.BeginAsync(1, start, new(new(1, 4, 20), new(1, 4, 20)), token);
         var error = await Assert.ThrowsAsync<TCodeBufferedException>(() => client.SendAsync(2, token, 0, start + 1000, 9999));
         Assert.Equal(9UL, error.Code);
         await client.SendAsync(0, token);
@@ -54,9 +54,9 @@ public class FirmwareTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var token = timeout.Token;
         await client.SynchronizeAsync(token);
-        await client.QueryLimitsAsync(token);
+        await client.QueryPoseAsync(token);
         var start = client.Now + 3000000;
-        await client.BeginAsync(0x37, start, token); // explicitly exclude R0
+        await client.BeginAsync(0x37, start, new(new(1, 4, 20), new(1, 4, 20)), token); // explicitly exclude R0
         await client.SendAsync(2, token, 0, start + 1000000, 5100,
             1, start + 1000000, 5000, 2, start + 1000000, 5000,
             4, start + 1000000, 4900, 5, start + 1000000, 5000);

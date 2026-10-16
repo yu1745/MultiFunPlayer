@@ -8,7 +8,6 @@
 int main() {
     auto queue = std::make_unique<tcode_v04::Queue>();
     queue->boot = 99;
-    queue->configure({{{1,4,20},{1,4,20}}});
     tcode_v04::State state;
     state.p.fill(.5f);
     const auto origin = std::chrono::steady_clock::now();

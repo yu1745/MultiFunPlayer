@@ -25,7 +25,6 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     public ulong Boot { get; private set; }
     public ulong Session { get; private set; }
     public ulong[] Status { get; private set; }
-    public TCodeBufferedLimits Limits { get; private set; }
     public double UncertaintyMilliseconds { get; private set; }
     public bool MayOwnMotion => _beginSession.HasValue;
     public static double HostMicroseconds => Stopwatch.GetTimestamp() * (1000000d / Stopwatch.Frequency);
@@ -77,16 +76,18 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         => fields.Length >= 6 && fields[5] <= 5 &&
             ((fields[0] == 100 && fields.Length == 22 && fields[8] == 512
                 && fields.Skip(9).Take(6).All(x => x <= 512))
-            || (fields[0] == 101 && fields.Length == 20));
+            || (fields[0] == 101 && fields.Length == 13));
 
-    public async Task<TCodeBufferedLimits> QueryLimitsAsync(CancellationToken token)
+    public async Task<BufferedDevicePose> QueryPoseAsync(CancellationToken token)
     {
         var reply = await TransactAsync(6, token).ConfigureAwait(false);
         if (reply[2] != Boot || reply[3] != Session)
-            throw new IOException("P4 identity changed while querying motion limits.");
+            throw new IOException("P4 identity changed while querying its pose.");
+        if (reply[4] != 0)
+            throw new TCodeBufferedException(reply[4], 6, reply[5]);
         if (reply[0] != 101)
-            throw new IOException("P4 does not support motion-limit negotiation. Update the firmware before buffered playback.");
-        return Limits = TCodeBufferedLimits.Decode(reply);
+            throw new IOException("Expected a P4 pose response.");
+        return BufferedDevicePose.Decode(reply);
     }
 
     public async Task<ulong[]> SendAsync(ulong operation, CancellationToken token, params ulong[] args)
@@ -157,14 +158,13 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             throw new IOException("P4 clock round trip exceeds 200 ms; buffered playback was not armed.");
     }
 
-    public async Task BeginAsync(ulong mask, ulong start, CancellationToken token)
+    public async Task BeginAsync(ulong mask, ulong start, BufferedSessionLimits limits, CancellationToken token)
     {
-        if (Limits == null)
-            throw new InvalidOperationException("Query device motion limits before BEGIN.");
+        var args = new ulong[] { mask, start, 1 }.Concat(limits.Encode()).ToArray();
         // Mark BEFORE sending: a lost BEGIN ACK may still mean the device has
         // accepted a new session. Cleanup queries that session before STOP.
         _beginSession = Session;
-        try { await SendAsync(1, token, mask, start, Limits.Revision, 1).ConfigureAwait(false); }
+        try { await SendAsync(1, token, args).ConfigureAwait(false); }
         catch (TCodeBufferedException) { _beginSession = null; throw; }
     }
 

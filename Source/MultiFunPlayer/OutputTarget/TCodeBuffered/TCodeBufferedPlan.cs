@@ -9,32 +9,10 @@ internal static class TCodeBufferedPlan
 {
     public static readonly string[] AxisNames = ["L0", "L1", "L2", "R0", "R1", "R2"];
 
-    public static LimitedBufferedPlan CreateLimited(BufferedPlaybackSnapshot snapshot, TCodeBufferedLimits limits)
+    public static BufferedSessionPlan CreateSession(BufferedPlaybackSnapshot snapshot, BufferedDevicePose device)
     {
         var nodes = Create(snapshot, 0);
-        var scale = 1d;
-        for (var axis = 0; axis < 6; axis++)
-        {
-            foreach (var pair in nodes[axis].Zip(nodes[axis].Skip(1)))
-            {
-                var distance = Math.Abs((double)pair.Second.Position - pair.First.Position);
-                if (distance == 0) continue;
-                var allowed = limits.ForAxis(axis).AllowedDistance((pair.Second.Microseconds - pair.First.Microseconds) / 1e6) * 10000;
-                if (distance > allowed)
-                    scale = Math.Min(scale, Math.Max(0, allowed - 2) / distance);
-            }
-        }
-        if (scale < 1)
-        {
-            for (var axis = 0; axis < 6; axis++)
-            {
-                if (nodes[axis].Count == 0) continue;
-                var settings = snapshot.Axes.Single(x => x.Name == AxisNames[axis]);
-                var center = (settings.Minimum + settings.Maximum) * .5 * 9999;
-                for (var i = 0; i < nodes[axis].Count; i++)
-                    nodes[axis][i] = nodes[axis][i] with { Position = (ulong)Math.Round(center + scale * (nodes[axis][i].Position - center)) };
-            }
-        }
+        var limits = BufferedSessionLimits.FromScript(nodes, device.Positions);
 
         // Reposition from the device's queried pose. Long, low-limit positioning
         // is split into feasible <=55 s intervals; media stays paused throughout.
@@ -42,44 +20,44 @@ internal static class TCodeBufferedPlan
         for (var axis = 0; axis < 6; axis++)
         {
             if (nodes[axis].Count == 0) continue;
-            var distance = Math.Abs(nodes[axis][0].Position / 10000d - limits.Positions[axis]);
+            var distance = Math.Abs(nodes[axis][0].Position / 10000d - device.Positions[axis]);
             steps = Math.Max(steps, checked((int)Math.Ceiling((distance + .0003) / limits.ForAxis(axis).AllowedDistance(55))));
         }
         if (steps > 512)
-            throw new InvalidDataException("Device limits require too many initial positioning segments.");
+            throw new InvalidDataException("Script limits require too many initial positioning segments.");
         var segmentSeconds = 1d;
         for (var axis = 0; axis < 6; axis++)
         {
             if (nodes[axis].Count == 0) continue;
-            var distance = Math.Abs(nodes[axis][0].Position / 10000d - limits.Positions[axis]);
+            var distance = Math.Abs(nodes[axis][0].Position / 10000d - device.Positions[axis]);
             segmentSeconds = Math.Max(segmentSeconds, limits.ForAxis(axis).RequiredSeconds(distance / steps + .0003));
         }
         var segmentUs = (ulong)Math.Ceiling(segmentSeconds * 1e6);
         if (segmentUs > 60000000)
-            throw new InvalidDataException("Device limits cannot accommodate positioning within the supported interval.");
+            throw new InvalidDataException("Script limits cannot accommodate positioning within the supported interval.");
         var positioning = segmentUs * (ulong)steps;
         for (var axis = 0; axis < 6; axis++)
         {
             if (nodes[axis].Count == 0) continue;
             var first = nodes[axis][0].Position;
-            var start = limits.Positions[axis] * 10000;
+            var start = device.Positions[axis] * 10000;
             var prelude = new List<BufferedNode>();
             for (var i = 1; i < steps; i++)
                 prelude.Add(new(axis, segmentUs * (ulong)i, (ulong)Math.Clamp(Math.Round(start + (first - start) * i / steps), 0, 9999)));
             prelude.AddRange(nodes[axis].Select(n => n with { Microseconds = checked(n.Microseconds + positioning) }));
             nodes[axis] = prelude;
             var previousTime = 0UL;
-            var previousPosition = limits.Positions[axis];
+            var previousPosition = device.Positions[axis];
             foreach (var node in prelude)
             {
                 var distance = Math.Abs(node.Position / 10000d - previousPosition);
                 if (distance > limits.ForAxis(axis).AllowedDistance((node.Microseconds - previousTime) / 1e6))
-                    throw new InvalidDataException($"{AxisNames[axis]}: quantized trajectory exceeds device limits.");
+                    throw new InvalidDataException($"{AxisNames[axis]}: quantized trajectory exceeds script limits.");
                 previousTime = node.Microseconds;
                 previousPosition = node.Position / 10000d;
             }
         }
-        return new(nodes, scale, positioning);
+        return new(nodes, limits, positioning);
     }
 
     public static List<BufferedNode>[] Create(BufferedPlaybackSnapshot snapshot, ulong epoch)

@@ -5,20 +5,19 @@ namespace MultiFunPlayer.TCode.Tests;
 
 public class ClientTests
 {
+    private static readonly BufferedSessionLimits Limits = new(new(1, 4, 20), new(1, 4, 20));
     [Fact]
-    public async Task CapabilitiesBindBeginWithoutAdvancingMutationSequence()
+    public async Task PoseQueryDoesNotAdvanceMutationSequence()
     {
         var link = new FakeLink();
         await using var client = link.Client();
         await client.SendAsync(0, CancellationToken.None);
-        var limits = await client.QueryLimitsAsync(CancellationToken.None);
-        Assert.Equal(new BufferedAxisLimits(1, 4, 20), limits.Translation);
-        Assert.Equal(new BufferedAxisLimits(1, 4, 20), limits.Rotation);
-        Assert.All(limits.Positions, position => Assert.Equal(.5, position));
+        var pose = await client.QueryPoseAsync(CancellationToken.None);
+        Assert.All(pose.Positions, position => Assert.Equal(.5, position));
         Assert.Equal(22, client.Status.Length);
-        await client.BeginAsync(1, 4000000, CancellationToken.None);
+        await client.BeginAsync(1, 4000000, Limits, CancellationToken.None);
         Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1], out var begin));
-        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 1, 1 }, begin);
+        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 1, 1000000, 4000000, 20000000, 1000000, 4000000, 20000000 }, begin);
     }
 
     [Fact]
@@ -27,7 +26,7 @@ public class ClientTests
         var link = new FakeLink { Profile = 2 };
         await using var client = link.Client();
         await client.SendAsync(0, CancellationToken.None);
-        await Assert.ThrowsAsync<InvalidDataException>(() => client.QueryLimitsAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.QueryPoseAsync(CancellationToken.None));
         Assert.False(client.MayOwnMotion);
         Assert.Equal(0UL, link.Session);
     }
@@ -49,9 +48,9 @@ public class ClientTests
         var link = new FakeLink();
         await using var client = link.Client();
         await client.SendAsync(0, CancellationToken.None);
-        await client.QueryLimitsAsync(CancellationToken.None);
+        await client.QueryPoseAsync(CancellationToken.None);
         link.DropWrites = 3;
-        await Assert.ThrowsAsync<IOException>(() => client.BeginAsync(1, 4000000, CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(() => client.BeginAsync(1, 4000000, Limits, CancellationToken.None));
         Assert.True(client.MayOwnMotion);
         await client.StopAsync(CancellationToken.None);
         Assert.False(client.MayOwnMotion);
@@ -78,8 +77,8 @@ public class ClientTests
         var link = new FakeLink();
         await using var client = link.Client();
         await client.SendAsync(0, CancellationToken.None);
-        await client.QueryLimitsAsync(CancellationToken.None);
-        await client.BeginAsync(1, 4000000, CancellationToken.None);
+        await client.QueryPoseAsync(CancellationToken.None);
+        await client.BeginAsync(1, 4000000, Limits, CancellationToken.None);
         link.CorruptReplies = true;
         await Assert.ThrowsAnyAsync<Exception>(() => client.SendAsync(0, CancellationToken.None));
         await Assert.ThrowsAnyAsync<Exception>(() => client.StopAsync(CancellationToken.None));
@@ -117,6 +116,8 @@ public class ClientTests
             Assert.True(TCodeBufferedProtocol.TryDecode(wire, out var f));
             if (f[0] == 1 && wire != _lastBegin)
             {
+                Assert.Equal(13, f.Length);
+                Assert.Equal(Limits.Encode(), f.Skip(7));
                 Session++;
                 State = 1;
                 _lastBegin = wire;
@@ -126,8 +127,7 @@ public class ClientTests
             ulong[] reply = [100, WrongRequestId ? f[1] + 1 : f[1], Boot, Session, 0, State, 1000000, 1, 512,
                 512, 512, 512, 512, 512, 512, 0, 0, 0, 0, 0, 0, 0];
             if (f[0] == 6)
-                reply = [101, f[1], Boot, Session, 0, State, 1, Profile, 1000000, 4000000, 20000000,
-                    1000000, 4000000, 20000000, 500000, 500000, 500000, 500000, 500000, 500000];
+                reply = [101, f[1], Boot, Session, 0, State, Profile, 500000, 500000, 500000, 500000, 500000, 500000];
             var response = TCodeBufferedProtocol.Encode(reply);
             if (CorruptReplies) response = response.Replace("!4,100,", "!4,101,");
             if (FragmentReplies)

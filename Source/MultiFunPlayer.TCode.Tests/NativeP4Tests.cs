@@ -48,9 +48,9 @@ public class NativeP4Tests
         Assert.Contains(rows, row => row[3] == 3 && row[4] == 63);
         Assert.Contains(rows, row => row[3] == 4 && row[4] == 63);
         var begin = firmware.Requests.Single(fields => fields[0] == 1);
-        Assert.Equal(8, begin.Length);
-        Assert.Equal(1UL, begin[6]); // negotiated revision
-        Assert.Equal(1UL, begin[7]); // septic profile
+        Assert.Equal(13, begin.Length);
+        Assert.Equal(1UL, begin[6]); // septic profile
+        Assert.All(begin.Skip(7), value => Assert.InRange(value, 1UL, 100000000000UL));
         for (var axis = 0; axis < 6; axis++)
         {
             var points = new List<(double Time, double Value)> { (begin[5], .5) };
@@ -72,34 +72,35 @@ public class NativeP4Tests
                 var s = u <= .5 ? Septic(u) : 1 - Septic(1 - u);
                 var expected = a.Value + (b.Value - a.Value) * s;
                 Assert.InRange(Math.Abs(row[6 + axis * 4] - expected), 0, .000003);
-                Assert.InRange(Math.Abs(row[7 + axis * 4]), 0, 1.00001);
-                Assert.InRange(Math.Abs(row[8 + axis * 4]), 0, 4.00001);
-                Assert.InRange(Math.Abs(row[9 + axis * 4]), 0, 20.00001);
+                Assert.InRange(Math.Abs(row[7 + axis * 4]), 0, begin[7 + (axis < 3 ? 0 : 3) + 0] / 1e6 * 1.00001);
+                Assert.InRange(Math.Abs(row[8 + axis * 4]), 0, begin[7 + (axis < 3 ? 0 : 3) + 1] / 1e6 * 1.00001);
+                Assert.InRange(Math.Abs(row[9 + axis * 4]), 0, begin[7 + (axis < 3 ? 0 : 3) + 2] / 1e6 * 1.00001);
             }
         }
     }
 
     [NativeP4Fact]
-    public async Task OverLimitScriptIsReducedBeforeNativeDeviceExecutesMotion()
+    public async Task FastScriptRetainsAmplitudeWithItsOwnNativeSessionEnvelope()
     {
         using var firmware = new NativeP4();
         await using var client = firmware.Client();
-        var media = new Media([new(0, .5), new(.1, .9), new(.2, .5)]);
+        // Leave time for fragmented clock synchronization before the fast segment.
+        var media = new Media([new(0, .5), new(2, .5), new(2.1, .9), new(2.2, .5)]);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        double? scale = null;
+        BufferedSessionLimits limits = null;
         var runner = new TCodeBufferedPlayback(client, media.Snapshot, media.SetPlaying,
             () => 0, () => true, status =>
             {
-                if (status.State == "Preloading") scale = status.AmplitudeScale;
+                if (status.State == "Preloading") limits = status.Limits;
                 if (status.State == "Complete (holding)") completed.TrySetResult();
             });
         var run = runner.RunAsync(cancellation.Token);
         try
         {
             await WaitFor(completed.Task, run);
-            Assert.NotNull(scale);
-            Assert.InRange(scale.Value, 0, .01);
+            Assert.NotNull(limits);
+            Assert.True(limits.Translation.Jerk > 20000);
             Assert.Equal(0UL, client.Status[21]);
         }
         finally
@@ -115,12 +116,12 @@ public class NativeP4Tests
         for (var axis = 0; axis < 6; axis++)
         {
             var values = moving.Select(row => row[6 + axis * 4]).ToArray();
-            Assert.InRange(values.Max() - values.Min(), 0, .001);
+            Assert.InRange(values.Max() - values.Min(), .39, .401);
             Assert.All(moving, row =>
             {
-                Assert.InRange(Math.Abs(row[7 + axis * 4]), 0, 1.00001);
-                Assert.InRange(Math.Abs(row[8 + axis * 4]), 0, 4.00001);
-                Assert.InRange(Math.Abs(row[9 + axis * 4]), 0, 20.00001);
+                Assert.InRange(Math.Abs(row[7 + axis * 4]), 0, limits.ForAxis(axis).Velocity * 1.00001);
+                Assert.InRange(Math.Abs(row[8 + axis * 4]), 0, limits.ForAxis(axis).Acceleration * 1.00001);
+                Assert.InRange(Math.Abs(row[9 + axis * 4]), 0, limits.ForAxis(axis).Jerk * 1.00001);
             });
         }
     }
@@ -129,12 +130,13 @@ public class NativeP4Tests
     public async Task FragmentedSerialAndLostBeginAckRetryThroughRealNativeReceiver()
     {
         using var firmware = new NativeP4 { DropFirstBeginAck = true };
-        await using var client = firmware.Client(TimeSpan.FromMilliseconds(100));
+        // Windows timer granularity can make seven-byte writes take >100 ms.
+        await using var client = firmware.Client(TimeSpan.FromMilliseconds(500));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         await client.SynchronizeAsync(timeout.Token);
-        await client.QueryLimitsAsync(timeout.Token);
+        await client.QueryPoseAsync(timeout.Token);
         var start = client.Now + 3000000;
-        await client.BeginAsync(1, start, timeout.Token);
+        await client.BeginAsync(1, start, new(new(1, 4, 20), new(1, 4, 20)), timeout.Token);
         var begins = firmware.Wires.Where(wire => TCodeBufferedProtocol.TryDecode(wire, out var f) && f[0] == 1).ToArray();
         Assert.Equal(2, begins.Length);
         Assert.Equal(begins[0], begins[1]);

@@ -8,7 +8,8 @@
             <TextBlock Margin="0 6 0 0" Text="{Binding State}" TextWrapping="Wrap"/>
             <TextBlock Text="{Binding ClockUncertaintyMs, StringFormat=Clock uncertainty: ±{0:F1} ms}"/>
             <TextBlock Text="{Binding BufferedSeconds, StringFormat=Buffered: {0:F1} s}"/>
-            <TextBlock Text="{Binding AmplitudeScale, StringFormat=Motion amplitude: {0:P1}}"/>
+            <TextBlock Text="{Binding TranslationLimits, StringFormat=Script translation V/A/J: {0}}"/>
+            <TextBlock Text="{Binding RotationLimits, StringFormat=Script rotation V/A/J: {0}}"/>
             <TextBlock Margin="0 6 0 0" TextWrapping="Wrap"
                        Text="Preloads scripts for L0–L2 / R0–R2. Playback pauses for clock sync and positioning. Requires a TCode 0.4 serial device with replies and media play/pause control."/>
             <TextBlock Margin="0 6 0 0" TextWrapping="Wrap"

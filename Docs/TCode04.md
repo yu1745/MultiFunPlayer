@@ -5,7 +5,7 @@ disconnected, then connect to the CTW serial port. Fixed Update and Polled Updat
 retain their original behavior. Other output targets do not offer Buffered Update.
 
 The device must implement CTW's `!4` time-buffered protocol including mandatory
-LIMITS negotiation (opcode 6), revision-bound BEGIN, and return its CRC32
+POSE query (opcode 6), script-limit BEGIN, and return its CRC32
 acknowledgements on the same serial connection. This is the implementation in
 `ctw_esp32s3_0909/include/tcode_queue.hpp`, not a generic claim of compatibility
 with other protocols called TCode 0.4. Serial baud rate, DTR/RTS and other port
@@ -14,29 +14,30 @@ settings remain configurable in the existing Serial settings panel.
 Load scripts for any of `L0`, `L1`, `L2`, `R0`, `R1`, `R2`, enable the desired
 output axes, and start media playback. The connected media source must support
 MFP play/pause commands and report its playback state. MFP pauses it during clock
-synchronization and preloading, calculates positioning using device limits, then
+synchronization and preloading, calculates positioning using script-derived session limits, then
 resumes it at the agreed device epoch. Preparation includes three seconds of lead
 and at least one second of positioning, potentially longer at low limits.
 A media source that does not acknowledge pause or
 play is rejected before continuing playback.
 
 The settings panel shows the current state, clock uncertainty estimate and
-remaining unsealed buffer and actual amplitude percentage. A completed trajectory holds its final positions
+remaining unsealed buffer and translation/rotation script V/A/J. A completed trajectory holds its final positions
 until pause, disconnection or a new session. Only one Buffered Update connection
 may control media playback at a time.
 
 ## Trajectory behavior
 
-- The device returns its six live translation/rotation velocity, acceleration
-  and jerk limits plus revision and current pose. Unsupported old firmware is
-  rejected. Update P4 and MFP together; no C3 protocol changes are needed.
-- The host computes a fixed common amplitude scale for the active script session,
-  about each axis's configured output-range midpoint. It preserves the timestamps,
-  reserves 2% numerical margin, and verifies quantized nodes. Difficult segments
-  can reduce the whole session's amplitude, including to zero at extreme rates.
-- The device independently rejects over-limit batches before insertion. Changing
-  motion limits faults the session; controlled braking may retain the previously
-  accepted limits until the state is viable under newly lowered limits.
+- POSE returns only the current positions and interpolation profile. BEGIN carries
+  six positive script-derived V/A/J bounds. Update P4 and MFP together; old packet
+  layouts are removed. C3 remains transparent.
+- The host derives maxima from quantized script segments after rate/range/offset
+  transforms, reserves 2% margin, and preserves script amplitude and timestamps.
+  Initial positioning is lengthened to fit these bounds. A stationary group uses
+  the initial displacement over one second, or a 0.01 floor if no motion is needed.
+  Numeric overflow fails planning explicitly.
+- The device independently rejects batches exceeding the session envelope.
+  Changing legacy TRAJECTORY_* limits does not invalidate V4. Controlled braking
+  retains the accepted state and session bounds until ordinary control can take over.
 
 - Six-axis mapping: `L0/L1/L2/R0/R1/R2` → protocol axes `0/1/2/3/4/5`.
   Missing, script-bypassed or output-disabled axes are not queued. Auxiliary axes
