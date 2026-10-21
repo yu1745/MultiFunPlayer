@@ -26,9 +26,44 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     private readonly object _modeLock = new();
     private CancellationTokenSource _motionCancellation;
     private SerialPresetSession _presetSession;
+    private SerialManualSession _manualSession;
+    public bool IsManualOpen { get; private set; }
+    public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen;
+
+    public async Task OpenManual()
+    {
+        if (!CanOpenManual) return;
+        IsManualOpen = true;
+        AutoConnectEnabled = false;
+        var session = new SerialManualSession();
+        try
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            lock (_modeLock)
+            {
+                if (!IsConnected || !_serialRunning || _presetSession != null || _manualSession != null)
+                    throw new IOException("串口不可用，请稍后重试。");
+                _manualSession = session;
+                _motionCancellation?.Cancel();
+            }
+            await DialogHelper.ShowAsync(new ManualControlDialog(session, AxisSettings, GetValue), "RootDialog");
+        }
+        catch (Exception error)
+        {
+            session.Fail(error);
+            await DialogHelper.ShowErrorAsync(error, "手动控制失败", "RootDialog");
+        }
+        finally
+        {
+            AutoConnectEnabled = false;
+            await DisconnectAsync();
+            lock (_modeLock) { if (ReferenceEquals(_manualSession, session)) _manualSession = null; }
+            IsManualOpen = false;
+        }
+    }
     private bool _serialRunning;
     public bool IsPresetOpen { get; private set; }
-    public bool CanOpenPresets => IsConnected && !IsPresetOpen;
+    public bool CanOpenPresets => IsConnected && !IsPresetOpen && !IsManualOpen;
 
     public async Task OpenPresets()
     {
@@ -236,14 +271,20 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             while (!token.IsCancellationRequested && serialPort.IsOpen)
             {
                 SerialPresetSession session;
+                SerialManualSession manual;
                 CancellationTokenSource motion;
                 lock (_modeLock)
                 {
                     session = _presetSession;
-                    motion = session == null ? CancellationTokenSource.CreateLinkedTokenSource(token) : null;
+                    manual = _manualSession;
+                    motion = session == null && manual == null ? CancellationTokenSource.CreateLinkedTokenSource(token) : null;
                     _motionCancellation = motion;
                 }
-                if (session != null)
+                if (manual != null)
+                {
+                    manual.Run(serialPort.Write, () => { if (serialPort.BytesToRead > 0) ReadExisting(); }, token);
+                }
+                else if (session != null)
                 {
                     try
                     {
@@ -379,6 +420,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
         lock (_modeLock)
         {
             _serialRunning = false;
+            _manualSession?.Fail(new IOException("串口已断开，请关闭手动控制窗口。"));
             _presetSession?.Fail(new IOException("串口已断开，预设操作未完成。"));
             _presetSession = null;
         }
