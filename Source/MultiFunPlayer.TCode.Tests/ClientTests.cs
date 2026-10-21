@@ -5,6 +5,32 @@ namespace MultiFunPlayer.TCode.Tests;
 
 public class ClientTests
 {
+    [Theory]
+    [InlineData(55UL)]
+    [InlineData(63UL)]
+    [InlineData(8UL)]
+    [InlineData(0UL)]
+    public async Task SupportedAxesQueryPreservesMutationSequence(ulong axes)
+    {
+        var link = new FakeLink { SupportedAxes = axes };
+        await using var client = link.Client();
+        await client.SendAsync(0, CancellationToken.None);
+        Assert.Equal(axes, await client.QuerySupportedAxesAsync(CancellationToken.None));
+        await client.BeginAsync(1, 4000000, Limits, CancellationToken.None);
+        Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1], out var begin));
+        Assert.Equal(1UL, begin[1]);
+    }
+
+    [Fact]
+    public async Task OldFirmwareRequiresUpdateBeforeMotion()
+    {
+        var link = new FakeLink { SupportedAxes = null };
+        await using var client = link.Client();
+        await client.SendAsync(0, CancellationToken.None);
+        var error = await Assert.ThrowsAsync<IOException>(() => client.QuerySupportedAxesAsync(CancellationToken.None));
+        Assert.Contains("Update the P4 firmware", error.Message);
+        Assert.False(client.MayOwnMotion);
+    }
     private static readonly BufferedSessionLimits Limits = new(new(1, 4, 20), new(1, 4, 20));
     [Fact]
     public async Task StartupAllowsBootBeyondNormalRetryBudget()
@@ -127,6 +153,7 @@ public class ClientTests
         public bool CorruptReplies { get; set; }
         public bool WrongRequestId { get; set; }
         public ulong Profile { get; set; } = 1;
+        public ulong? SupportedAxes { get; set; } = 63;
         public TCodeBufferedClient Client(Action<string> diagnostic = null) => new(Write, async ct => await _received.Reader.ReadAsync(ct), TimeSpan.FromMilliseconds(25), diagnostic);
 
         private Task Write(string wire, CancellationToken token)
@@ -147,6 +174,8 @@ public class ClientTests
                 512, 512, 512, 512, 512, 512, 0, 0, 0, 0, 0, 0, 0];
             if (f[0] == 6)
                 reply = [101, f[1], Boot, Session, 0, State, Profile, 500000, 500000, 500000, 500000, 500000, 500000];
+            if (f[0] == 10 && SupportedAxes.HasValue)
+                reply = [103, f[1], Boot, Session, 0, State, SupportedAxes.Value];
             var response = TCodeBufferedProtocol.Encode(reply);
             if (CorruptReplies) response = response.Replace("!4,100,", "!4,101,");
             if (FragmentReplies)

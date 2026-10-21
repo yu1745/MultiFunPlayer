@@ -5,6 +5,27 @@ namespace MultiFunPlayer.TCode.Tests;
 
 public class SessionPlanTests
 {
+    [Fact]
+    public void MissingTwistMotorIgnoresScriptBeforeValidationAndLimitCalculation()
+    {
+        Keyframe[] frames = [new(0, .4), new(2, .6)];
+        var source = ProtocolAndPlanTests.Snapshot(frames) with
+        {
+            Axes = TCodeBufferedPlan.AxisNames.Select(name => new BufferedScriptAxis(name, frames, 0, 1, false, .5)).ToArray()
+        };
+        var all = TCodeBufferedPlan.CreateSession(source, Pose(), 63);
+        Assert.All(all.Nodes, nodes => Assert.NotEmpty(nodes));
+        var badTwist = source with { Axes = source.Axes.Select(a => a.Name == "R0" ? a with { UnsupportedReason = "invalid unused script" } : a).ToArray() };
+        var filtered = TCodeBufferedPlan.CreateSession(badTwist, Pose(), 55);
+        Assert.Empty(filtered.Nodes[3]);
+        foreach (var axis in new[] { 0, 1, 2, 4, 5 }) Assert.NotEmpty(filtered.Nodes[axis]);
+        Assert.Equal(55, filtered.Nodes.Select((nodes, i) => nodes.Count > 0 ? 1 << i : 0).Aggregate((a, b) => a | b));
+        var removed = source with { Axes = source.Axes.Where(a => a.Name != "R0").ToArray() };
+        var expected = TCodeBufferedPlan.CreateSession(removed, Pose());
+        Assert.Equal(expected.Limits, filtered.Limits);
+        Assert.Equal(expected.PositioningMicroseconds, filtered.PositioningMicroseconds);
+        Assert.Throws<InvalidDataException>(() => TCodeBufferedPlan.CreateSession(source, Pose(), 0));
+    }
     private static BufferedDevicePose Pose(double value = .5) => new(Enumerable.Repeat(value, 6).ToArray());
 
     [Fact]

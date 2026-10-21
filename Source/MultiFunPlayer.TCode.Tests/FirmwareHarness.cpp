@@ -5,7 +5,8 @@
 #include <iostream>
 #include <memory>
 
-int main() {
+int main(int argc, char** argv) {
+    const uint8_t supported = argc > 1 ? uint8_t(std::stoi(argv[1])) : 63;
     auto queue = std::make_unique<tcode_v04::Queue>();
     queue->boot = 99;
     tcode_v04::State state;
@@ -22,7 +23,9 @@ int main() {
         if(queue->isPaused()) {state=queue->pausePose();queue->updatePauseState(state);}
         std::vector<uint64_t> fields;
         const bool stop = tcode_v04::decode(line, fields) && fields[0] == 5;
-        std::cout << queue->handle(line + "\n", now, state, true) << std::flush;
+        const auto axes = fields.size() == 13 && fields[0] == 1 ? fields[4] : queue->mask;
+        const bool ready = (axes & ~supported) == 0;
+        std::cout << queue->handle(line + "\n", now, state, ready, supported) << std::flush;
         if (stop) { state.v.fill(0); state.a.fill(0); state.j.fill(0); }
     }
 }

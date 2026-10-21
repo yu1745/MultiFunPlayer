@@ -19,6 +19,34 @@ public sealed class FirmwareFactAttribute : FactAttribute
 public class FirmwareTests
 {
     [FirmwareFact]
+    public async Task FiveAxisDevicePlaysAllScriptsWithoutRequiringTwistMotor()
+    {
+        using var firmware = new Firmware(55);
+        await using var client = firmware.Client();
+        var media = new Media();
+        BufferedPlaybackSnapshot Snapshot()
+        {
+            var source = media.Snapshot();
+            return source with { Axes = TCodeBufferedPlan.AxisNames.Select(name => source.Axes[0] with { Name = name }).ToArray() };
+        }
+        var playing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var diagnostics = new ConcurrentQueue<string>();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var runner = new TCodeBufferedPlayback(client, Snapshot, media.SetPlaying, () => 0, () => true,
+            status => { if (status.State == "Playing") playing.TrySetResult(); }, diagnostics.Enqueue);
+        var run = runner.RunAsync(cancellation.Token);
+        try
+        {
+            var completed = await Task.WhenAny(playing.Task, run).WaitAsync(TimeSpan.FromSeconds(5));
+            if (completed == run) await run;
+            Assert.True(playing.Task.IsCompletedSuccessfully);
+            Assert.Contains(diagnostics, line => line.Contains("supportedAxes=55 ignoredAxes=[R0]"));
+            Assert.Equal(1UL, client.Session);
+        }
+        finally { cancellation.Cancel(); await run; }
+        Assert.False(client.MayOwnMotion);
+    }
+    [FirmwareFact]
     public async Task PreparationReplansWithoutBrieflyPlayingAndResumesPromptly()
     {
         using var firmware = new Firmware();
@@ -223,10 +251,10 @@ public class FirmwareTests
     private sealed class Firmware : IDisposable
     {
         private readonly Process _process;
-        public Firmware()
+        public Firmware(int supportedAxes = 63)
         {
             _process = Process.Start(new ProcessStartInfo(Environment.GetEnvironmentVariable("CTW_TCODE_HARNESS"))
-            { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false });
+            { Arguments = supportedAxes.ToString(), RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false });
         }
         public TCodeBufferedClient Client() => new(async (wire, ct) =>
         {

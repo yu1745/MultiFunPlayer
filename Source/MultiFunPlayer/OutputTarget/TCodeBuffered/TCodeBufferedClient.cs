@@ -83,7 +83,19 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             ((fields[0] == 100 && fields.Length == 22 && fields[8] == 512
                 && fields.Skip(9).Take(6).All(x => x <= 512))
             || (fields[0] == 101 && fields.Length == 13)
-            || (fields[0] == 102 && fields.Length == 11));
+            || (fields[0] == 102 && fields.Length == 11)
+            || (fields[0] == 103 && fields.Length == 7 && fields[6] <= 63));
+
+    public async Task<ulong> QuerySupportedAxesAsync(CancellationToken token)
+    {
+        var reply = await TransactAsync(10, token).ConfigureAwait(false);
+        if (reply[2] != Boot || reply[3] != Session)
+            throw new IOException("P4 identity changed while querying supported axes.");
+        if (reply[0] != 103)
+            throw new IOException("P4 firmware does not report supported axes. Update the P4 firmware.");
+        if (reply[4] != 0) throw new TCodeBufferedException(reply[4], 10, reply[5]);
+        return reply[6];
+    }
 
     public Task<ulong[]> QueryTimingAsync(CancellationToken token) => TimingAsync(9, token);
     public Task<ulong[]> PauseAsync(ulong cursor, CancellationToken token) => TimingAsync(7, token, cursor);
@@ -155,7 +167,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     private async Task<ulong[]> TransactWithAttemptsAsync(ulong operation, CancellationToken token, int attempts, params ulong[] args)
     {
-        var id = operation is 0 or 6 or 9 ? ++_query : ++_request;
+        var id = operation is 0 or 6 or 9 or 10 ? ++_query : ++_request;
         var wire = TCodeBufferedProtocol.Encode(new ulong[] { operation, id, Boot, Session }.Concat(args));
         var transactionStarted = HostMicroseconds;
         for (var attempt = 0; attempt < attempts; attempt++)

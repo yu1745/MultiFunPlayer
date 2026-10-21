@@ -9,8 +9,16 @@ internal static class TCodeBufferedPlan
 {
     public static readonly string[] AxisNames = ["L0", "L1", "L2", "R0", "R1", "R2"];
 
-    public static BufferedSessionPlan CreateSession(BufferedPlaybackSnapshot snapshot, BufferedDevicePose device)
+    public static BufferedSessionPlan CreateSession(BufferedPlaybackSnapshot snapshot, BufferedDevicePose device, ulong supportedAxes = 63)
     {
+        if (supportedAxes > 63) throw new InvalidDataException("Invalid device axis mask.");
+        snapshot = snapshot with { Axes = snapshot.Axes.Where(a =>
+        {
+            var index = Array.IndexOf(AxisNames, a.Name);
+            return index >= 0 && (supportedAxes & (1UL << index)) != 0;
+        }).ToArray() };
+        if (snapshot.Axes.Count == 0)
+            throw new InvalidDataException("No loaded output axes are supported by this device.");
         var nodes = Create(snapshot, 0);
         var limits = BufferedSessionLimits.FromScript(nodes, device.Positions);
 

@@ -87,7 +87,11 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
 
         report(new("Reading device pose", client.UncertaintyMilliseconds));
         var pose = await client.QueryPoseAsync(token).ConfigureAwait(false);
-        var plan = TCodeBufferedPlan.CreateSession(source, pose);
+        var supportedAxes = await client.QuerySupportedAxesAsync(token).ConfigureAwait(false);
+        var ignored = source.Axes.Where(a => Array.IndexOf(TCodeBufferedPlan.AxisNames, a.Name) is var i &&
+            (i < 0 || (supportedAxes & (1UL << i)) == 0)).Select(a => a.Name);
+        diagnostic?.Invoke($"PREP {preparation} supportedAxes={supportedAxes} ignoredAxes=[{string.Join(',', ignored)}]");
+        var plan = TCodeBufferedPlan.CreateSession(source, pose, supportedAxes);
         diagnostic?.Invoke(FormattableString.Invariant($"PREP {preparation} plan positioningMs={plan.PositioningMicroseconds / 1000d:F2} leadMs={PreloadLeadMicroseconds(plan, client.UncertaintyMilliseconds) / 1000d:F2} pose=[{string.Join(',', pose.Positions)}] first=[{string.Join(',', plan.Nodes.Select(a => a.Count > 0 ? a[0].Position.ToString() : "-"))}] counts=[{string.Join(',', plan.Nodes.Select(a => a.Count))}] limits=[{string.Join(',', plan.Limits.Encode())}]"));
         var nodes = plan.Nodes;
         var mask = (ulong)nodes.Select((p, i) => p.Count > 0 ? 1 << i : 0).Aggregate((a, b) => a | b);
