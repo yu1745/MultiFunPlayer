@@ -19,6 +19,36 @@ public sealed class FirmwareFactAttribute : FactAttribute
 public class FirmwareTests
 {
     [FirmwareFact]
+    public async Task PreparationReplansWithoutBrieflyPlayingAndResumesPromptly()
+    {
+        using var firmware = new Firmware();
+        await using var client = firmware.Client();
+        var media = new Media();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var plays = 0;
+        var preparations = 0;
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var watch = Stopwatch.StartNew();
+        var runner = new TCodeBufferedPlayback(client, media.Snapshot,
+            playing => { if (playing) Interlocked.Increment(ref plays); media.SetPlaying(playing); },
+            () => 0, () => true, s =>
+            {
+                if (s.State == "Reading device pose" && ++preparations == 1)
+                    media.Seek(.01, 1); // delayed media position after pause acknowledgement
+                if (s.State == "Playing") resumed.TrySetResult();
+            });
+        var run = runner.RunAsync(cancellation.Token);
+        try
+        {
+            await resumed.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            Assert.True(preparations >= 2);
+            Assert.Equal(1, plays);
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3));
+        }
+        finally { cancellation.Cancel(); await run; }
+    }
+
+    [FirmwareFact]
     public async Task HostKeepsFullScriptAndDeviceEnforcesSessionEnvelope()
     {
         using var firmware = new Firmware();
@@ -107,7 +137,7 @@ public class FirmwareTests
             var initialTail = client.Status[15];
             await WaitFor(() => client.Status[15] > initialTail, run);
             media.SetPlaying(false);
-            await WaitFor(() => client.Status[5] == 0, run);
+            await WaitFor(() => client.Status[5] == 7, run);
             Assert.Equal(0UL, client.Status[21]);
             media.Seek(10, 2);
             media.SetPlaying(true);

@@ -287,6 +287,19 @@ internal sealed class Bootstrapper : Bootstrapper<RootViewModel>
     {
         var config = new LoggingConfiguration();
 
+        config.LoggingRules.Add(new LoggingRule("MultiFunPlayer.BufferedDiagnostics", LogLevel.Info, LogLevel.Fatal, new FileTarget()
+        {
+            FileName = @"${basedir}\Logs\buffered-playback.log",
+            ArchiveFileName = @"${basedir}\Logs\buffered-playback.{#}.log",
+            ArchiveNumbering = ArchiveNumberingMode.DateAndSequence,
+            ArchiveDateFormat = "yyyyMMdd",
+            ArchiveAboveSize = 10 * 1024 * 1024,
+            ArchiveOldFileOnStartup = true,
+            MaxArchiveFiles = 5,
+            AutoFlush = false,
+            OpenFileFlushTimeout = 1
+        }) { RuleName = "buffered-diagnostics", Final = true });
+
         config.LoggingRules.Add(new LoggingRule("*", LogLevel.Trace, LogLevel.Fatal, new FileTarget()
         {
             FileName = @"${basedir}\Logs\application.log",

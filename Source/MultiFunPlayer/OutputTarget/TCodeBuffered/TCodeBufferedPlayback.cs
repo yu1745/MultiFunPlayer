@@ -7,9 +7,12 @@ internal sealed record BufferedPlaybackStatus(string State, double ClockUncertai
 
 internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
     Func<BufferedPlaybackSnapshot> snapshot, Action<bool> setPlaying,
-    Func<long> controlRevision, Func<bool> wantsPlayback, Action<BufferedPlaybackStatus> report)
+    Func<long> controlRevision, Func<bool> wantsPlayback, Action<BufferedPlaybackStatus> report,
+    Action<string> diagnostic = null)
 {
     private static readonly SemaphoreSlim MediaControlLease = new(1, 1);
+    private bool _prepareAgain;
+    private long _preparation;
 
     public async Task RunAsync(CancellationToken token)
     {
@@ -19,13 +22,15 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         {
             report(new("Synchronizing"));
             await client.SynchronizeAsync(token).ConfigureAwait(false);
-            if (client.Status[5] is 1 or 2 or 3)
+            await client.QueryTimingAsync(token).ConfigureAwait(false);
+            if (client.Status[5] is 1 or 2 or 3 or 6 or 7)
                 throw new IOException("P4 already has an active trajectory. Stop that player before connecting Buffered Update.");
             while (!token.IsCancellationRequested)
             {
                 report(new("Waiting for playback", client.UncertaintyMilliseconds));
-                while (!snapshot().IsPlaying)
+                while (!snapshot().IsPlaying && !_prepareAgain)
                     await Task.Delay(30, token).ConfigureAwait(false);
+                _prepareAgain = false;
                 await PlaySessionAsync(token).ConfigureAwait(false);
             }
         }
@@ -60,8 +65,11 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
     private async Task PlaySessionAsync(CancellationToken token)
     {
         var controls = controlRevision();
+        var preparation = ++_preparation;
+        var preparationStarted = TCodeBufferedClient.HostMicroseconds;
+        Trace("start", snapshot());
         report(new("Pausing media for preload", client.UncertaintyMilliseconds));
-        setPlaying(false);
+        if (snapshot().IsPlaying) setPlaying(false);
         var deadline = TCodeBufferedClient.HostMicroseconds + 2000000;
         while (snapshot().IsPlaying)
         {
@@ -70,6 +78,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             await Task.Delay(20, token).ConfigureAwait(false);
         }
         var source = snapshot();
+        Trace("pause acknowledged", source);
         if (controlRevision() != controls) { RestartPreparation(); return; }
         // Validate the complete trajectory before BEGIN acquires motion.
         await client.SynchronizeAsync(token).ConfigureAwait(false);
@@ -79,6 +88,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         report(new("Reading device pose", client.UncertaintyMilliseconds));
         var pose = await client.QueryPoseAsync(token).ConfigureAwait(false);
         var plan = TCodeBufferedPlan.CreateSession(source, pose);
+        diagnostic?.Invoke(FormattableString.Invariant($"PREP {preparation} plan positioningMs={plan.PositioningMicroseconds / 1000d:F2} leadMs={PreloadLeadMicroseconds(plan, client.UncertaintyMilliseconds) / 1000d:F2} pose=[{string.Join(',', pose.Positions)}] first=[{string.Join(',', plan.Nodes.Select(a => a.Count > 0 ? a[0].Position.ToString() : "-"))}] counts=[{string.Join(',', plan.Nodes.Select(a => a.Count))}] limits=[{string.Join(',', plan.Limits.Encode())}]"));
         var nodes = plan.Nodes;
         var mask = (ulong)nodes.Select((p, i) => p.Count > 0 ? 1 << i : 0).Aggregate((a, b) => a | b);
 
@@ -87,10 +97,10 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         while (true)
         {
             if (ChangedWhilePreparing()) { RestartPreparation(); return; }
-            start = client.Now + 3000000;
+            start = client.Now + PreloadLeadMicroseconds(plan, client.UncertaintyMilliseconds);
             try { await client.BeginAsync(mask, start, plan.Limits, token).ConfigureAwait(false); break; }
             catch (TCodeBufferedException e) when (e.Code == 8 && TCodeBufferedClient.HostMicroseconds < deadline)
-            { await Task.Delay(100, token).ConfigureAwait(false); }
+            { Trace("BEGIN not ready; retrying", snapshot()); await Task.Delay(100, token).ConfigureAwait(false); }
         }
         var epoch = start + plan.PositioningMicroseconds;
         // Keep the validated relative node times; do not recompute from a later
@@ -101,9 +111,10 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         var cursor = new int[6];
         var sealedAxes = new bool[6];
         report(new("Preloading", client.UncertaintyMilliseconds, Limits: plan.Limits));
-        if (!await RefillAsync(ChangedWhilePreparing).ConfigureAwait(false)) { await StopAsync(); RestartPreparation(); return; }
+        if (!await RefillAsync(ChangedWhilePreparing, start + 1000000).ConfigureAwait(false)) { await StopAsync(); RestartPreparation(); return; }
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
         await client.SendAsync(4, token).ConfigureAwait(false);
+        diagnostic?.Invoke($"PREP {preparation} armed nowUs={client.Now} startUs={start} mediaEpochUs={epoch}");
         report(new("Positioning", client.UncertaintyMilliseconds, Limits: plan.Limits));
         var nextPositioningRefill = 0UL;
         while (client.Now < epoch)
@@ -114,12 +125,14 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                 await client.SendAsync(0, token).ConfigureAwait(false);
                 if (client.Status[5] is not (2 or 3 or 4))
                     throw new IOException("P4 positioning stopped or configuration changed.");
-                if (!await RefillAsync(ChangedWhilePreparing).ConfigureAwait(false)) { await StopAsync(); RestartPreparation(); return; }
+                if (!await RefillAsync(ChangedWhilePreparing, Math.Max(start + 1000000, client.Now + 1000000)).ConfigureAwait(false))
+                { await StopAsync(); RestartPreparation(); return; }
                 nextPositioningRefill = client.Now + 200000;
             }
             await Task.Delay(10, token).ConfigureAwait(false);
         }
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
+        Trace("request play", snapshot());
         setPlaying(true);
         deadline = TCodeBufferedClient.HostMicroseconds + 1000000;
         while (!snapshot().IsPlaying)
@@ -130,12 +143,23 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             await Task.Delay(10, token).ConfigureAwait(false);
         }
         var nextRefill = 0UL;
+        Trace("play acknowledged", snapshot());
         while (true)
         {
             token.ThrowIfCancellationRequested();
             var current = snapshot();
-            if (!current.IsPlaying || !source.HasSameTimeline(current) || controlRevision() != controls)
+            if (!source.HasSameTimeline(current))
+            {
+                Trace($"playback interrupted sameTimeline={source.HasSameTimeline(current)} controlsAtStart={controls}", current);
                 break;
+            }
+            if (!current.IsPlaying || (controlRevision() != controls && !wantsPlayback()))
+            {
+                if (!await PauseAndResumeAsync(current).ConfigureAwait(false)) break;
+                nextRefill = 0;
+                continue;
+            }
+            controls = controlRevision();
             var expected = source.Position + ((double)client.Now - epoch) / 1000000 * source.Speed;
             if (!double.IsFinite(current.Position) || Math.Abs(current.Position - expected) > .150)
                 throw new IOException("Media clock diverged from P4 by over 150 ms; buffered playback stopped.");
@@ -145,7 +169,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                 if (client.Status[5] is not (2 or 3 or 4))
                     throw new IOException("P4 trajectory stopped or underrun.");
                 if (client.Status[5] != 4 && !await RefillAsync(ChangedWhilePlaying).ConfigureAwait(false))
-                    break;
+                    continue; // The main loop distinguishes pause from timeline replacement.
                 var tails = nodes.Select((p, i) => p.Count > 0 && !sealedAxes[i] ? client.Status[15 + i] : ulong.MaxValue).ToArray();
                 var buffered = tails.Min() == ulong.MaxValue ? 0 : Math.Max(0, ((double)tails.Min() - client.Now) / 1000000);
                 report(new(client.Status[5] == 4 ? "Complete (holding)" : "Playing", client.UncertaintyMilliseconds, buffered, plan.Limits));
@@ -155,19 +179,111 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         }
         await StopAsync();
 
+        async Task<bool> PauseAndResumeAsync(BufferedPlaybackSnapshot paused)
+        {
+            // Ordinary pause retains the session, accepted envelope, queue and
+            // upload cursors. Seek/script/speed changes still invalidate it.
+            if (paused.IsPlaying)
+            {
+                setPlaying(false);
+                var until = TCodeBufferedClient.HostMicroseconds + 2000000;
+                while (snapshot().IsPlaying)
+                {
+                    if (TCodeBufferedClient.HostMicroseconds > until)
+                        throw new IOException("Media source did not acknowledge pause.");
+                    await Task.Delay(10, token).ConfigureAwait(false);
+                }
+                paused = snapshot();
+            }
+            var cursorUs = checked((ulong)Math.Max(0, epoch + (paused.Position - source.Position) / source.Speed * 1000000));
+            Trace($"retaining queue at media cursor {cursorUs}", paused);
+            await client.PauseAsync(cursorUs, token).ConfigureAwait(false);
+            var pendingPlay = false;
+            var pendingControls = controlRevision();
+            var nextQuery = 0UL;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var current = snapshot();
+                if (!source.HasSameTimeline(current) ||
+                    (!current.IsPlaying && Math.Abs(current.Position - paused.Position) > .150))
+                { Trace("paused session invalidated", current); return false; }
+                if (pendingPlay && controlRevision() != pendingControls) pendingPlay = false;
+                if (client.Now >= nextQuery)
+                {
+                    await client.RefreshPausedStatusAsync(token).ConfigureAwait(false);
+                    if (client.Status[5] is not (6 or 7))
+                        throw new IOException("P4 lost its retained paused trajectory.");
+                    report(new(client.Status[5] == 7 ? "Paused (queue retained)" : "Pausing (settling)", client.UncertaintyMilliseconds));
+                    nextQuery = client.Now + 100000;
+                }
+                if (current.IsPlaying || pendingPlay)
+                {
+                    if (client.Status[5] != 7)
+                    {
+                        if (current.IsPlaying)
+                        {
+                            pendingPlay = true; pendingControls = controlRevision();
+                            setPlaying(false);
+                            Trace("resume waiting for braking to settle", current);
+                        }
+                    }
+                    else
+                    {
+                        var requested = TCodeBufferedClient.HostMicroseconds;
+                        var resumeControls = controlRevision();
+                        var lead = (ulong)Math.Max(50000, client.UncertaintyMilliseconds * 2000 + 20000);
+                        var timing = await client.ResumeAsync(client.Now + lead, token).ConfigureAwait(false);
+                        var shift = timing[8];
+                        epoch = checked(epoch + shift);
+                        for (var axis = 0; axis < 6; axis++)
+                            for (var i = 0; i < nodes[axis].Count; i++)
+                                nodes[axis][i] = nodes[axis][i] with { Microseconds = checked(nodes[axis][i].Microseconds + shift) };
+                        diagnostic?.Invoke($"RESUME retained session={client.Session} shiftUs={shift} startUs={timing[9]} mediaUs={timing[10]} physicalLeadUs={timing[10] - timing[9]}");
+                        // Most resumes need no media intervention. A very fast
+                        // interrupted segment may need extra time to restart
+                        // within its original envelope; only then hold media.
+                        var gated = pendingPlay || timing[10] > client.Now + 100000;
+                        if (gated)
+                        {
+                            if (snapshot().IsPlaying) setPlaying(false);
+                            while (client.Now < timing[10])
+                            {
+                                if (controlRevision() != resumeControls || !source.HasSameTimeline(snapshot()))
+                                    return false;
+                                await Task.Delay(5, token).ConfigureAwait(false);
+                            }
+                            if (controlRevision() == resumeControls) setPlaying(true);
+                        }
+                        controls = resumeControls;
+                        await client.SendAsync(0, token).ConfigureAwait(false);
+                        Trace(FormattableString.Invariant($"retained resume completed in {(TCodeBufferedClient.HostMicroseconds - requested) / 1000:F2} ms gated={gated}"), snapshot());
+                        report(new("Resumed (queue retained)", client.UncertaintyMilliseconds));
+                        return true;
+                    }
+                }
+                await Task.Delay(10, token).ConfigureAwait(false);
+            }
+        }
+
         void RestartPreparation()
         {
-            if (wantsPlayback() && !token.IsCancellationRequested)
-                setPlaying(true);
+            // Rebuild while paused. Briefly playing merely to re-enter the outer
+            // loop advances media again and can cause an endless prepare cycle.
+            _prepareAgain = wantsPlayback() && !token.IsCancellationRequested;
+            Trace($"restart preparation requested={_prepareAgain}", snapshot());
         }
 
         bool ChangedWhilePreparing()
         {
             token.ThrowIfCancellationRequested();
             var current = snapshot();
-            return current.IsPlaying || !source.HasSameTimeline(current)
+            var changed = current.IsPlaying || !source.HasSameTimeline(current)
                 || !double.IsFinite(current.Position) || Math.Abs(current.Position - source.Position) > .001
                 || controlRevision() != controls;
+            if (changed)
+                Trace(FormattableString.Invariant($"preparation invalidated sameTimeline={source.HasSameTimeline(current)} sourcePosition={source.Position:F6} deltaMs={(current.Position - source.Position) * 1000:F3} controlsAtStart={controls}"), current);
+            return changed;
         }
 
         bool ChangedWhilePlaying()
@@ -184,20 +300,25 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
 
         async Task StopAsync()
         {
+            Trace("request STOP", snapshot());
             // A Pause arriving between the final preparation check and our Play
             // must still win once the control revision is observed.
             if (controlRevision() != controls && !wantsPlayback())
                 setPlaying(false);
             await client.StopAsync(token).ConfigureAwait(false);
             report(new("Stopped", client.UncertaintyMilliseconds));
+            Trace("STOP acknowledged", snapshot());
         }
 
-        async Task<bool> RefillAsync(Func<bool> changed)
+        void Trace(string reason, BufferedPlaybackSnapshot current)
+            => diagnostic?.Invoke(FormattableString.Invariant($"PREP {preparation} {reason} elapsedMs={(TCodeBufferedClient.HostMicroseconds - preparationStarted) / 1000:F2} playing={current.IsPlaying} position={current.Position:F6} speed={current.Speed:F3} timelineRevision={current.Revision} controlRevision={controlRevision()} wantsPlayback={wantsPlayback()} deviceState={client.Status?[5]} session={client.Session}"));
+
+        async Task<bool> RefillAsync(Func<bool> changed, ulong? preloadHorizon = null)
         {
             while (true)
             {
                 if (changed()) return false;
-                var horizon = client.Now + 6000000;
+                var horizon = preloadHorizon ?? client.Now + 6000000;
                 var free = client.Status.Skip(9).Take(6).ToArray();
                 var tails = client.Status.Skip(15).Take(6).ToArray();
                 var next = (int[])cursor.Clone();
@@ -230,5 +351,19 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             }
             return true;
         }
+    }
+
+    internal static ulong PreloadLeadMicroseconds(BufferedSessionPlan plan, double uncertaintyMs)
+    {
+        // ARM needs one second on each unsealed axis. Budget only that initial
+        // prefix; fill the longer rolling buffer after ARM. Include the first
+        // point beyond the horizon, as RefillAsync does.
+        var points = plan.Nodes.Sum(axis => axis.Count == 0 ? 0 :
+            Math.Min(axis.Count, axis.TakeWhile(n => n.Microseconds < 1000000).Count() + 1));
+        var transactions = (points + 4) / 5 + 3; // BEGIN, optional SEAL, ARM
+        var milliseconds = Math.Max(750, 200 + transactions * Math.Max(25, uncertaintyMs * 2 + 5) * 2);
+        if (milliseconds > 9000)
+            throw new IOException("Initial trajectory is too dense for the measured connection latency.");
+        return (ulong)Math.Ceiling(milliseconds * 1000);
     }
 }

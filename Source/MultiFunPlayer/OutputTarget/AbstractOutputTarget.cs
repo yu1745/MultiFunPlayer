@@ -145,11 +145,17 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
         Func<CancellationToken, Task<string>> read, CancellationToken token)
     {
         var context = (TCodeBufferedUpdateContext)UpdateContexts[DeviceAxisUpdateType.BufferedUpdate];
-        using var control = new BufferedMediaControl(EventAggregator);
-        await using var client = new TCodeBufferedClient(write, read);
+        var diagnosticLogger = LogManager.GetLogger("MultiFunPlayer.BufferedDiagnostics");
+        var connection = Guid.NewGuid().ToString("N")[..8];
+        void Diagnostic(string message) => diagnosticLogger.Info("[{0} {1}] {2}", Identifier, connection, message);
+        Diagnostic("CONNECT diagnostics-v1");
+        using var control = new BufferedMediaControl(EventAggregator, Diagnostic);
+        await using var client = new TCodeBufferedClient(write, read, diagnostic: Diagnostic);
         var playback = new TCodeBufferedPlayback(client, GetSnapshot, control.SetPlaying,
             () => control.Revision, () => control.WantsPlayback, status =>
             {
+                if (context.State != status.State)
+                    Diagnostic(FormattableString.Invariant($"STATE {status.State} uncertaintyMs={status.ClockUncertaintyMs:F2} bufferedSeconds={status.BufferedSeconds:F2}"));
                 context.State = status.State;
                 context.ClockUncertaintyMs = status.ClockUncertaintyMs;
                 context.BufferedSeconds = status.BufferedSeconds;
@@ -160,10 +166,11 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
                     context.TranslationLimits = FormattableString.Invariant($"{t.Velocity:G5} / {t.Acceleration:G5} / {t.Jerk:G5}");
                     context.RotationLimits = FormattableString.Invariant($"{r.Velocity:G5} / {r.Acceleration:G5} / {r.Jerk:G5}");
                 }
-            });
+            }, Diagnostic);
         try { await playback.RunAsync(token).ConfigureAwait(false); }
         finally
         {
+            Diagnostic($"DISCONNECT finalState={context.State}");
             if (!context.State.StartsWith("Error:") && context.State != "STOP not acknowledged")
                 context.State = "Disconnected";
         }

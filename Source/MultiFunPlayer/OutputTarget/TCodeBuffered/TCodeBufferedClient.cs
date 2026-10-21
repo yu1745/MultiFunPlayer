@@ -17,6 +17,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     });
     private readonly Task _receiver;
     private readonly TimeSpan _ackTimeout;
+    private readonly Action<string> _diagnostic;
     private ulong _request;
     private ulong _query = 4294967296;
     private double _offset;
@@ -31,10 +32,11 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     public ulong Now => checked((ulong)Math.Max(0, Math.Round(HostMicroseconds + _offset)));
 
     public TCodeBufferedClient(Func<string, CancellationToken, Task> write,
-        Func<CancellationToken, Task<string>> read, TimeSpan? ackTimeout = null)
+        Func<CancellationToken, Task<string>> read, TimeSpan? ackTimeout = null, Action<string> diagnostic = null)
     {
         _write = write;
         _ackTimeout = ackTimeout ?? TimeSpan.FromMilliseconds(700);
+        _diagnostic = diagnostic;
         _receiver = ReceiveAsync(read, _receiveCancellation.Token);
     }
 
@@ -59,7 +61,11 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     var line = buffer.ToString();
                     buffer.Clear();
                     var start = line.IndexOf("!4,", StringComparison.Ordinal);
-                    if (start < 0) continue; // Boot logs and shell prompts are not ACKs.
+                    if (start < 0)
+                    {
+                        if (!string.IsNullOrWhiteSpace(line)) _diagnostic?.Invoke($"RX non-ACK: {line.Trim()}");
+                        continue;
+                    }
                     if (!TCodeBufferedProtocol.TryDecode(line[start..], out var fields)
                         || !ValidReply(fields))
                         throw new InvalidDataException("Invalid TCode 0.4 acknowledgement (format or CRC32).");
@@ -73,10 +79,45 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     }
 
     private static bool ValidReply(ulong[] fields)
-        => fields.Length >= 6 && fields[5] <= 5 &&
+        => fields.Length >= 6 && fields[5] <= 7 &&
             ((fields[0] == 100 && fields.Length == 22 && fields[8] == 512
                 && fields.Skip(9).Take(6).All(x => x <= 512))
-            || (fields[0] == 101 && fields.Length == 13));
+            || (fields[0] == 101 && fields.Length == 13)
+            || (fields[0] == 102 && fields.Length == 11));
+
+    public Task<ulong[]> QueryTimingAsync(CancellationToken token) => TimingAsync(9, token);
+    public Task<ulong[]> PauseAsync(ulong cursor, CancellationToken token) => TimingAsync(7, token, cursor);
+    public Task<ulong[]> ResumeAsync(ulong start, CancellationToken token) => TimingAsync(8, token, start);
+
+    public async Task RefreshPausedStatusAsync(CancellationToken token)
+    {
+        var before = HostMicroseconds;
+        var reply = await SendAsync(0, token).ConfigureAwait(false);
+        var after = HostMicroseconds;
+        if (reply[5] is 6 or 7 && after - before <= 200000)
+        {
+            // A long user pause must not accumulate host/device clock drift.
+            // Only the clock mapping changes; accepted device timestamps do not.
+            _offset = reply[6] - (before + after) / 2;
+            UncertaintyMilliseconds = (after - before) / 2000;
+        }
+    }
+
+    private async Task<ulong[]> TimingAsync(ulong operation, CancellationToken token, params ulong[] args)
+    {
+        var reply = await TransactAsync(operation, token, args).ConfigureAwait(false);
+        if (reply[0] != 102)
+            throw new IOException("P4 firmware does not support retained-queue pause/resume. Update the P4 firmware.");
+        if (reply[2] != Boot || reply[3] != Session)
+            throw new IOException("P4 identity changed during pause/resume.");
+        if (reply[4] != 0) throw new TCodeBufferedException(reply[4], operation, reply[5]);
+        if (Status != null)
+        {
+            Status = (ulong[])Status.Clone();
+            Status[5] = reply[5]; Status[6] = reply[6];
+        }
+        return reply;
+    }
 
     public async Task<BufferedDevicePose> QueryPoseAsync(CancellationToken token)
     {
@@ -109,21 +150,32 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         return reply;
     }
 
-    private async Task<ulong[]> TransactAsync(ulong operation, CancellationToken token, params ulong[] args)
+    private Task<ulong[]> TransactAsync(ulong operation, CancellationToken token, params ulong[] args)
+        => TransactWithAttemptsAsync(operation, token, 3, args);
+
+    private async Task<ulong[]> TransactWithAttemptsAsync(ulong operation, CancellationToken token, int attempts, params ulong[] args)
     {
-        var id = operation is 0 or 6 ? ++_query : ++_request;
+        var id = operation is 0 or 6 or 9 ? ++_query : ++_request;
         var wire = TCodeBufferedProtocol.Encode(new ulong[] { operation, id, Boot, Session }.Concat(args));
-        for (var attempt = 0; attempt < 3; attempt++)
+        var transactionStarted = HostMicroseconds;
+        for (var attempt = 0; attempt < attempts; attempt++)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
             timeout.CancelAfter(_ackTimeout);
             try
             {
+                var sent = HostMicroseconds;
+                _diagnostic?.Invoke($"TX op={operation} id={id} boot={Boot} session={Session} attempt={attempt + 1}/{attempts} args=[{string.Join(',', args)}]");
                 await _write(wire, timeout.Token).ConfigureAwait(false);
                 while (true)
                 {
                     var reply = await _replies.Reader.ReadAsync(timeout.Token).ConfigureAwait(false);
-                    if (reply[1] == id) return reply;
+                    if (reply[1] == id)
+                    {
+                        _diagnostic?.Invoke(FormattableString.Invariant($"ACK op={operation} id={id} rttMs={(HostMicroseconds - sent) / 1000:F2} totalMs={(HostMicroseconds - transactionStarted) / 1000:F2} fields=[{string.Join(',', reply)}]"));
+                        return reply;
+                    }
+                    _diagnostic?.Invoke($"ACK ignored expectedId={id} receivedId={reply[1]}");
                 }
             }
             catch (ChannelClosedException e)
@@ -132,8 +184,9 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
-                if (attempt == 2)
-                    throw new IOException("TCode 0.4 ACK timeout after three identical transmissions.");
+                _diagnostic?.Invoke($"ACK TIMEOUT op={operation} id={id} attempt={attempt + 1}/{attempts}");
+                if (attempt == attempts - 1)
+                    throw new IOException($"TCode 0.4 ACK timeout after {attempts} identical transmissions.");
             }
         }
         throw new UnreachableException();
@@ -141,6 +194,11 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     public async Task SynchronizeAsync(CancellationToken token)
     {
+        var syncStarted = HostMicroseconds;
+        // Opening a serial port can reset the P4. Allow its boot to finish before
+        // collecting clock samples; a boot-delayed ACK is not a timing sample.
+        if (Status == null)
+            await TransactWithAttemptsAsync(0, token, 15).ConfigureAwait(false);
         var best = double.PositiveInfinity;
         for (var i = 0; i < 5; i++)
         {
@@ -154,6 +212,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             }
         }
         UncertaintyMilliseconds = best / 2000;
+        _diagnostic?.Invoke(FormattableString.Invariant($"SYNC elapsedMs={(HostMicroseconds - syncStarted) / 1000:F2} uncertaintyMs={UncertaintyMilliseconds:F2} offsetUs={_offset:F0}"));
         if (best > 200000)
             throw new IOException("P4 clock round trip exceeds 200 ms; buffered playback was not armed.");
     }

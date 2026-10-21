@@ -17,6 +17,69 @@ public sealed class NativeP4FactAttribute : FactAttribute
 public class NativeP4Tests
 {
     [NativeP4Fact]
+    public async Task PauseResumeRetainsSessionAndHasContinuousBoundedMotion()
+    {
+        using var firmware = new NativeP4 { FragmentWrites = false };
+        await using var client = firmware.Client();
+        var points = new List<Keyframe> { new(0, .5), new(1, .5) };
+        for (var i = 1; i <= 24; i++) points.Add(new(1 + i * .25, i % 2 == 1 ? .8 : .2));
+        var media = new Media(points.ToArray());
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runner = new TCodeBufferedPlayback(client, media.Snapshot, media.SetPlaying,
+            () => 0, () => true, s =>
+            {
+                if (s.State == "Paused (queue retained)") paused.TrySetResult();
+                if (s.State == "Resumed (queue retained)") resumed.TrySetResult();
+            });
+        var run = runner.RunAsync(cancellation.Token);
+        try
+        {
+            while (!media.Snapshot().IsPlaying || media.Snapshot().Position < 1.12)
+            {
+                if (run.IsCompleted) await run;
+                await Task.Delay(5, cancellation.Token);
+            }
+            media.SetPlaying(false);
+            await WaitFor(paused.Task, run);
+            var session = client.Session;
+            await Task.Delay(200, cancellation.Token);
+            var watch = Stopwatch.StartNew();
+            media.SetPlaying(true);
+            await WaitFor(resumed.Task, run);
+            Console.WriteLine($"Retained queue resume completed in {watch.Elapsed.TotalMilliseconds:F2} ms; session={session}");
+            Assert.True(watch.Elapsed < TimeSpan.FromMilliseconds(250), $"Resume took {watch.Elapsed.TotalMilliseconds} ms");
+            Assert.Equal(session, client.Session);
+            Assert.Single(firmware.Requests.Where(f => f[0] == 1));
+            Assert.Single(firmware.Requests.Where(f => f[0] == 7));
+            Assert.Single(firmware.Requests.Where(f => f[0] == 8));
+            Assert.DoesNotContain(firmware.Requests, f => f[0] == 5);
+            await Task.Delay(1000, cancellation.Token);
+            if (run.IsCompleted) await run;
+            Assert.Equal(0UL, client.Status[21]);
+        }
+        finally { cancellation.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(5)); }
+        firmware.Close();
+        var rows = firmware.ReadTrace();
+        var begin = firmware.Requests.Single(f => f[0] == 1);
+        Assert.Contains(rows, r => r[3] == 6);
+        Assert.Contains(rows, r => r[3] == 7);
+        Assert.All(rows, r => Assert.Equal(0, r[5]));
+        for (var axis = 0; axis < 6; axis++)
+        {
+            var offset = 7 + (axis < 3 ? 0 : 3);
+            var v = begin[offset] / 1e6; var a = begin[offset + 1] / 1e6; var j = begin[offset + 2] / 1e6;
+            foreach (var pair in rows.Zip(rows.Skip(1)))
+            {
+                Assert.InRange(Math.Abs(pair.Second[6 + axis * 4] - pair.First[6 + axis * 4]), 0, v * .001 + .0005);
+                Assert.InRange(Math.Abs(pair.Second[7 + axis * 4] - pair.First[7 + axis * 4]), 0, a * .001 + .001);
+                Assert.InRange(Math.Abs(pair.Second[8 + axis * 4] - pair.First[8 + axis * 4]), 0, j * .001 + .01);
+            }
+        }
+    }
+
+    [NativeP4Fact]
     public async Task SixAxisPlaybackMatchesProcessedNativeTrajectoryAndHoldsThenStops()
     {
         using var firmware = new NativeP4();
@@ -41,7 +104,9 @@ public class NativeP4Tests
         Assert.Equal(0UL, client.Status[5]);
         firmware.Close();
         var rows = firmware.ReadTrace();
-        Assert.True(rows.Count > 6000, "Native motion task must sample continuously at 1 kHz.");
+        // The three-second script must be sampled in full; startup no longer
+        // contributes the old fixed four seconds to the trace length.
+        Assert.True(rows.Count > 3000, "Native motion task must sample the complete script at 1 kHz.");
         Assert.All(rows.Zip(rows.Skip(1)), pair => Assert.Equal(1000, pair.Second[0] - pair.First[0]));
         Assert.All(rows, row => Assert.Equal(0, row[5])); // production smoother rejection counter
         Assert.Contains(rows, row => row[3] == 2 && row[4] == 63);
@@ -168,6 +233,7 @@ public class NativeP4Tests
         private bool _dropped;
         private bool _closed;
         public bool DropFirstBeginAck { get; init; }
+        public bool FragmentWrites { get; init; } = true;
         public List<ulong[]> Requests { get; } = [];
         public List<string> Wires { get; } = [];
         public NativeP4()
@@ -190,6 +256,13 @@ public class NativeP4Tests
             Requests.Add(fields);
             Wires.Add(wire);
             if (fields[0] == 1) _beginRequest = fields[1];
+            if (!FragmentWrites)
+            {
+                await _process.StandardInput.WriteAsync(wire.AsMemory(), ct);
+                await _process.StandardInput.FlushAsync(ct);
+                await Task.Delay(10, ct);
+                return;
+            }
             // Real UART reader receives arbitrary fragments across its task ticks.
             for (var offset = 0; offset < wire.Length; offset += 7)
             {

@@ -25,12 +25,14 @@ internal static class TCodeBufferedPlan
         }
         if (steps > 512)
             throw new InvalidDataException("Script limits require too many initial positioning segments.");
-        var segmentSeconds = 1d;
+        var segmentSeconds = .001d;
         for (var axis = 0; axis < 6; axis++)
         {
             if (nodes[axis].Count == 0) continue;
             var distance = Math.Abs(nodes[axis][0].Position / 10000d - device.Positions[axis]);
-            segmentSeconds = Math.Max(segmentSeconds, limits.ForAxis(axis).RequiredSeconds(distance / steps + .0003));
+            if (distance > 0)
+                segmentSeconds = Math.Max(segmentSeconds, Math.Max(.05,
+                    limits.ForAxis(axis).RequiredSeconds(distance / steps + .0003)));
         }
         var segmentUs = (ulong)Math.Ceiling(segmentSeconds * 1e6);
         if (segmentUs > 60000000)

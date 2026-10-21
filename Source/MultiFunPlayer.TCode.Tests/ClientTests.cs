@@ -7,6 +7,22 @@ public class ClientTests
 {
     private static readonly BufferedSessionLimits Limits = new(new(1, 4, 20), new(1, 4, 20));
     [Fact]
+    public async Task StartupAllowsBootBeyondNormalRetryBudget()
+    {
+        var link = new FakeLink { DropWrites = 4, FragmentReplies = true };
+        await using var client = link.Client();
+        await client.SynchronizeAsync(CancellationToken.None);
+        Assert.Equal(10, link.Writes.Count);
+        Assert.All(link.Writes.Take(5), wire => Assert.Equal(link.Writes[0], wire));
+        Assert.Equal(99UL, client.Boot);
+        Assert.False(client.MayOwnMotion);
+        link.DropWrites = 3;
+        var before = link.Writes.Count;
+        await Assert.ThrowsAsync<IOException>(() => client.SendAsync(0, CancellationToken.None));
+        Assert.Equal(3, link.Writes.Count - before);
+    }
+
+    [Fact]
     public async Task PoseQueryDoesNotAdvanceMutationSequence()
     {
         var link = new FakeLink();
@@ -35,11 +51,14 @@ public class ClientTests
     public async Task LostAckRetriesIdenticalFrameAndAcceptsFragmentedReply()
     {
         var link = new FakeLink { DropWrites = 1, FragmentReplies = true };
-        await using var client = link.Client();
+        var diagnostics = new List<string>();
+        await using var client = link.Client(diagnostics.Add);
         await client.SendAsync(0, CancellationToken.None);
         Assert.Equal(2, link.Writes.Count);
         Assert.Equal(link.Writes[0], link.Writes[1]);
         Assert.Equal(99UL, client.Boot);
+        Assert.Contains(diagnostics, line => line.Contains("ACK TIMEOUT op=0"));
+        Assert.Contains(diagnostics, line => line.StartsWith("ACK op=0") && line.Contains("rttMs="));
     }
 
     [Fact]
@@ -108,7 +127,7 @@ public class ClientTests
         public bool CorruptReplies { get; set; }
         public bool WrongRequestId { get; set; }
         public ulong Profile { get; set; } = 1;
-        public TCodeBufferedClient Client() => new(Write, async ct => await _received.Reader.ReadAsync(ct), TimeSpan.FromMilliseconds(25));
+        public TCodeBufferedClient Client(Action<string> diagnostic = null) => new(Write, async ct => await _received.Reader.ReadAsync(ct), TimeSpan.FromMilliseconds(25), diagnostic);
 
         private Task Write(string wire, CancellationToken token)
         {

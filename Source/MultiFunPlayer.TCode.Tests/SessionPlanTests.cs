@@ -73,9 +73,21 @@ public class SessionPlanTests
     public void StaticScriptHasFiniteLimitsAndCanPosition(double initial)
     {
         var plan = TCodeBufferedPlan.CreateSession(ProtocolAndPlanTests.Snapshot([new(0, .5), new(10, .5)]), Pose(initial));
-        Assert.InRange(plan.PositioningMicroseconds, 1000000UL, 2000000UL);
+        if (initial == .5) Assert.Equal(1000UL, plan.PositioningMicroseconds);
+        else Assert.InRange(plan.PositioningMicroseconds, 1000000UL, 2000000UL);
         Assert.All(plan.Limits.Encode(), v => Assert.InRange(v, 1UL, 100000000000UL));
         Verify(plan, Pose(initial));
+    }
+
+    [Fact]
+    public void ResumeNearTargetUsesRequiredMotionTimeInsteadOfOneSecondFloor()
+    {
+        var pose = Pose(.49);
+        var plan = TCodeBufferedPlan.CreateSession(
+            ProtocolAndPlanTests.Snapshot([new(0, .5), new(.2, .6), new(.4, .5)]), pose);
+        Assert.InRange(plan.PositioningMicroseconds, 50000UL, 200000UL);
+        Assert.Equal(750000UL, TCodeBufferedPlayback.PreloadLeadMicroseconds(plan, 8));
+        Verify(plan, pose);
     }
 
     [Fact]

@@ -7,6 +7,7 @@ namespace MultiFunPlayer.UI.Dialogs.ViewModels;
 internal sealed class MpvDownloadDialog(Func<MpvDownloadDialog, Task> download) : Screen
 {
     private bool started;
+    private bool running;
     private string downloadFile;
     private readonly Stopwatch downloadTimer = new();
     private long previousBytes;
@@ -44,9 +45,11 @@ internal sealed class MpvDownloadDialog(Func<MpvDownloadDialog, Task> download) 
             Status = "正在解压安装包…";
             ProgressText = "下载完成，正在解压，请稍候…";
         }
-        else if (downloadFile == null)
+        else
         {
+            downloadFile = null;
             Status = message;
+            ProgressText = "";
         }
         Log += message + Environment.NewLine;
         if (Log.Length > 24000)
@@ -73,8 +76,9 @@ internal sealed class MpvDownloadDialog(Func<MpvDownloadDialog, Task> download) 
 
         var fileName = Path.GetFileName(downloadFile);
         var file = new FileInfo(Path.Combine(directory, fileName));
+        var partial = new FileInfo(file.FullName + ".partial");
         long bytes;
-        try { bytes = file.Exists ? file.Length : previousBytes; }
+        try { bytes = partial.Exists ? partial.Length : file.Exists ? file.Length : previousBytes; }
         catch (IOException) { return; }
         var seconds = downloadTimer.Elapsed.TotalSeconds;
         if (bytes == 0)
@@ -96,6 +100,8 @@ internal sealed class MpvDownloadDialog(Func<MpvDownloadDialog, Task> download) 
 
     public async void OnRetry()
     {
+        if (running || Succeeded) return;
+        running = true;
         IsBusy = true;
         Log = "";
         downloadFile = null;
@@ -115,10 +121,11 @@ internal sealed class MpvDownloadDialog(Func<MpvDownloadDialog, Task> download) 
             Report(e.ToString());
             Execute.OnUIThreadSync(() =>
             {
-                Status = "下载失败，请查看下方错误信息。";
+                Status = "下载未完成，已完成的组件已保留；重试将继续安装。";
                 IsBusy = false;
             });
         }
+        finally { running = false; }
     }
 
     public void OnDismiss()

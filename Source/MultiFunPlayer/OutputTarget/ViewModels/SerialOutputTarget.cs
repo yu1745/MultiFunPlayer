@@ -113,8 +113,10 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     public StopBits StopBits { get; set; } = StopBits.One;
     public int DataBits { get; set; } = 8;
     public Handshake Handshake { get; set; } = Handshake.None;
-    public bool DtrEnable { get; set; } = true;
-    public bool RtsEnable { get; set; } = true;
+    // Keep both modem outputs disabled when opening ESP auto-program ports.
+    // Asserting them can introduce a DTR/RTS mismatch and reset the device.
+    public bool DtrEnable { get; set; } = false;
+    public bool RtsEnable { get; set; } = false;
     public int ReadTimeout { get; set; } = 250;
     public int WriteTimeout { get; set; } = 250;
     public int WriteBufferSize { get; set; } = 2048;

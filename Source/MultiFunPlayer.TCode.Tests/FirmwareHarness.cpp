@@ -17,6 +17,9 @@ int main() {
             std::chrono::steady_clock::now() - origin).count() + 1000000;
         std::array<tcode_v04::Envelope, 2> envelope;
         queue->sample(now, state, envelope);
+        // This harness tests protocol state only. NativeP4Tests exercises the
+        // real 1 kHz bounded braking/settling implementation.
+        if(queue->isPaused()) {state=queue->pausePose();queue->updatePauseState(state);}
         std::vector<uint64_t> fields;
         const bool stop = tcode_v04::decode(line, fields) && fields[0] == 5;
         std::cout << queue->handle(line + "\n", now, state, true) << std::flush;
