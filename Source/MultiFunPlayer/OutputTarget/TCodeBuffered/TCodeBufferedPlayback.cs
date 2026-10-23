@@ -22,6 +22,8 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         {
             report(new("Synchronizing"));
             await client.SynchronizeAsync(token).ConfigureAwait(false);
+            await client.EnableDeviceDiagnosticsAsync(token).ConfigureAwait(false);
+            client.StartTracking();
             await client.QueryTimingAsync(token).ConfigureAwait(false);
             if (client.Status[5] is 1 or 2 or 3 or 6 or 7)
                 throw new IOException("P4 already has an active trajectory. Stop that player before connecting Buffered Update.");
@@ -128,7 +130,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             {
                 await client.SendAsync(0, token).ConfigureAwait(false);
                 if (client.Status[5] is not (2 or 3 or 4))
-                    throw new IOException("P4 positioning stopped or configuration changed.");
+                    throw client.DeviceStateException("P4 positioning stopped or configuration changed.");
                 if (!await RefillAsync(ChangedWhilePreparing, Math.Max(start + 1000000, client.Now + 1000000)).ConfigureAwait(false))
                 { await StopAsync(); RestartPreparation(); return; }
                 nextPositioningRefill = client.Now + 200000;
@@ -147,6 +149,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             await Task.Delay(10, token).ConfigureAwait(false);
         }
         var nextRefill = 0UL;
+        var nextClockSample = 0UL;
         Trace("play acknowledged", snapshot());
         while (true)
         {
@@ -164,14 +167,12 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                 continue;
             }
             controls = controlRevision();
-            var expected = source.Position + ((double)client.Now - epoch) / 1000000 * source.Speed;
-            if (!double.IsFinite(current.Position) || Math.Abs(current.Position - expected) > .150)
-                throw new IOException("Media clock diverged from P4 by over 150 ms; buffered playback stopped.");
+            CheckMediaClock(current, "playback");
             if (client.Now >= nextRefill)
             {
                 await client.SendAsync(0, token).ConfigureAwait(false);
                 if (client.Status[5] is not (2 or 3 or 4))
-                    throw new IOException("P4 trajectory stopped or underrun.");
+                    throw client.DeviceStateException("P4 trajectory stopped.");
                 if (client.Status[5] != 4 && !await RefillAsync(ChangedWhilePlaying).ConfigureAwait(false))
                     continue; // The main loop distinguishes pause from timeline replacement.
                 var tails = nodes.Select((p, i) => p.Count > 0 && !sealedAxes[i] ? client.Status[15 + i] : ulong.MaxValue).ToArray();
@@ -217,7 +218,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                 {
                     await client.RefreshPausedStatusAsync(token).ConfigureAwait(false);
                     if (client.Status[5] is not (6 or 7))
-                        throw new IOException("P4 lost its retained paused trajectory.");
+                        throw client.DeviceStateException("P4 paused trajectory failed before resume.");
                     report(new(client.Status[5] == 7 ? "Paused (queue retained)" : "Pausing (settling)", client.UncertaintyMilliseconds));
                     nextQuery = client.Now + 100000;
                 }
@@ -296,10 +297,24 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             var current = snapshot();
             if (!current.IsPlaying || !source.HasSameTimeline(current) || controlRevision() != controls)
                 return true;
-            var expected = source.Position + ((double)client.Now - epoch) / 1000000 * source.Speed;
-            if (!double.IsFinite(current.Position) || Math.Abs(current.Position - expected) > .150)
-                throw new IOException("Media clock diverged from P4 by over 150 ms; buffered playback stopped.");
+            CheckMediaClock(current, "refill");
             return false;
+        }
+
+        void CheckMediaClock(BufferedPlaybackSnapshot current, string phase)
+        {
+            var now = client.Now;
+            var expected = source.Position + ((double)now - epoch) / 1000000 * source.Speed;
+            var drift = current.Position - expected;
+            var failed = !double.IsFinite(current.Position) || Math.Abs(drift) > .150;
+            if (failed || now >= nextClockSample)
+            {
+                var direction = !double.IsFinite(drift) ? "invalid" : drift >= 0 ? "media-ahead" : "media-behind";
+                diagnostic?.Invoke(FormattableString.Invariant($"CLOCK {(failed ? "ERROR" : "SAMPLE")} prep={preparation} phase={phase} actualSeconds={current.Position:F6} expectedSeconds={expected:F6} driftMs={drift * 1000:+0.000;-0.000;0.000} direction={direction} thresholdMs=150 sourceSeconds={source.Position:F6} speed={source.Speed:F6} currentSpeed={current.Speed:F6} playing={current.IsPlaying} deviceNowUs={now} mediaEpochUs={epoch} elapsedMs={(TCodeBufferedClient.HostMicroseconds - preparationStarted) / 1000d:F3} uncertaintyMs={client.UncertaintyMilliseconds:F3} boot={client.Boot} session={client.Session} timelineRevision={current.Revision} controlRevision={controlRevision()} status=[{string.Join(',', client.Status)}]"));
+                nextClockSample = now + 1000000;
+            }
+            if (failed)
+                throw new IOException(FormattableString.Invariant($"Media clock diverged from P4 by over 150 ms; buffered playback stopped. Actual={current.Position:F6}s expected={expected:F6}s drift={drift * 1000:+0.000;-0.000;0.000}ms phase={phase}."));
         }
 
         async Task StopAsync()

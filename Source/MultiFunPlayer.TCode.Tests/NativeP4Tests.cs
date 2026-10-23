@@ -1,5 +1,6 @@
 using MultiFunPlayer.Common;
 using MultiFunPlayer.OutputTarget.TCodeBuffered;
+using MultiFunPlayer.OutputTarget.Tracking;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -16,6 +17,70 @@ public sealed class NativeP4FactAttribute : FactAttribute
 
 public class NativeP4Tests
 {
+    [NativeP4Fact]
+    public async Task StreamingTrackingDoesNotConsumePlaybackAcksOrStopTheSession()
+    {
+        using var firmware = new NativeP4 { FragmentWrites = false };
+        using var monitor = new TrackingMonitor();
+        await using var client = firmware.Client(tracking: monitor);
+        var media = new Media([new(0, .5), new(1, .5), new(2, .55), new(4, .5)]);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runner = new TCodeBufferedPlayback(client, media.Snapshot, media.SetPlaying,
+            () => 0, () => true, _ => { });
+        var run = runner.RunAsync(cancellation.Token);
+        try
+        {
+            var until = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 3;
+            while (Stopwatch.GetTimestamp() < until)
+            {
+                if (run.IsCompleted) await run;
+                await Task.Delay(10);
+            }
+            Assert.True(monitor.Snapshot.Quality.Received >= 40);
+            Assert.True(monitor.IsLive);
+            Assert.InRange(monitor.Snapshot.Axes[0].Statistics.Rms.Value.Value, 0, .01);
+            Assert.Contains(firmware.Requests, request => request[0] == 12);
+            Assert.Contains(firmware.Requests, request => request[0] == 4);
+        }
+        finally { cancellation.Cancel(); await run; }
+        Assert.Contains(firmware.Requests, request => request[0] == 5);
+    }
+    [NativeP4Fact]
+    public async Task ProductionPauseFailureReachesMfpLogsAndExceptionBeforeStop()
+    {
+        using var firmware = new NativeP4(injectPauseStall: true) { FragmentWrites = false };
+        var logs = new List<string>();
+        await using var client = firmware.Client(diagnostic: logs.Add);
+        var media = new Media([new(0, .5), new(1, .5), new(2, .55), new(4, .5)]);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runner = new TCodeBufferedPlayback(client, media.Snapshot, media.SetPlaying,
+            () => 0, () => true, _ => { });
+        var run = runner.RunAsync(cancellation.Token);
+        try
+        {
+            while (!media.Snapshot().IsPlaying || media.Snapshot().Position < 1.2)
+            {
+                if (run.IsCompleted) await run;
+                await Task.Delay(5, cancellation.Token);
+            }
+            media.SetPlaying(false);
+            var error = await Assert.ThrowsAsync<IOException>(() => run.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Contains("暂停收停计算失败", error.Message);
+            Assert.Contains("control_dt_out_of_range", error.Message);
+            Assert.Contains("underruns=0", error.Message);
+            Assert.Contains(logs, line => line.StartsWith("DEVICE ERROR") && line.Contains("reason=22"));
+            Assert.Equal(6, logs.Count(line => line.StartsWith("DEVICE CONTEXT") && line.Contains("reason=24")));
+            Assert.Single(firmware.Requests.Where(f => f[0] == 7));
+            Assert.Empty(firmware.Requests.Where(f => f[0] == 8));
+            Assert.Equal(5UL, firmware.Requests[^1][0]);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            try { await run; } catch (IOException) { }
+        }
+    }
+
     [NativeP4Fact]
     public async Task PauseResumeRetainsSessionAndHasContinuousBoundedMotion()
     {
@@ -236,7 +301,7 @@ public class NativeP4Tests
         public bool FragmentWrites { get; init; } = true;
         public List<ulong[]> Requests { get; } = [];
         public List<string> Wires { get; } = [];
-        public NativeP4()
+        public NativeP4(bool injectPauseStall = false)
         {
             var directory = Environment.GetEnvironmentVariable("MFP_NATIVE_TRACE_DIR");
             _keepTrace = !string.IsNullOrEmpty(directory);
@@ -247,10 +312,11 @@ public class NativeP4Tests
             { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             info.ArgumentList.Add("--trace");
             info.ArgumentList.Add(_trace);
+            if (injectPauseStall) info.ArgumentList.Add("--inject-pause-stall");
             _process = Process.Start(info);
             _errors = _process.StandardError.ReadToEndAsync();
         }
-        public TCodeBufferedClient Client(TimeSpan? timeout = null) => new(async (wire, ct) =>
+        public TCodeBufferedClient Client(TimeSpan? timeout = null, Action<string> diagnostic = null, TrackingMonitor tracking = null) => new(async (wire, ct) =>
         {
             Assert.True(TCodeBufferedProtocol.TryDecode(wire, out var fields));
             Requests.Add(fields);
@@ -284,7 +350,7 @@ public class NativeP4Tests
             var chunk = _pending[..Math.Min(11, _pending.Length)];
             _pending = _pending[chunk.Length..];
             return chunk;
-        }, timeout);
+        }, timeout, diagnostic, tracking: tracking);
         public void Close()
         {
             if (_closed) return;

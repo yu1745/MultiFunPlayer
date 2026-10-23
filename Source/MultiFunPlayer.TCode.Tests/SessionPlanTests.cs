@@ -6,6 +6,26 @@ namespace MultiFunPlayer.TCode.Tests;
 public class SessionPlanTests
 {
     [Fact]
+    public void DoubleSpeedStrokeKeepsTimesAndAmplitudeAboveFormerNumericCap()
+    {
+        var plan = TCodeBufferedPlan.CreateSession(
+            ProtocolAndPlanTests.Snapshot([new(0, .82), new(.058, .15), new(.116, .82)]), Pose());
+        Assert.InRange(plan.Limits.Translation.Jerk, 183932, 183934);
+        Assert.True(plan.Limits.Encode()[2] > 100000000000UL);
+        Assert.Equal(new ulong[] { 8199, 1500, 8199 }, plan.Nodes[0].Select(n => n.Position));
+        Assert.Equal(new ulong[] { 0, 58000, 116000 }, plan.Nodes[0].Select(n => n.Microseconds - plan.PositioningMicroseconds));
+        Verify(plan, Pose());
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(1e10)]
+    public void NonRepresentableEnvelopeStillFails(double value)
+        => Assert.Throws<InvalidDataException>(() => new BufferedSessionLimits(new(1, 1, value), new(1, 1, 1)).Encode());
+    [Fact]
     public void MissingTwistMotorIgnoresScriptBeforeValidationAndLimitCalculation()
     {
         Keyframe[] frames = [new(0, .4), new(2, .6)];

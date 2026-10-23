@@ -20,9 +20,18 @@ internal sealed record BufferedSessionLimits(BufferedAxisLimits Translation, Buf
     {
         double[] values = [Translation.Velocity, Translation.Acceleration, Translation.Jerk,
             Rotation.Velocity, Rotation.Acceleration, Rotation.Jerk];
-        if (values.Any(x => !double.IsFinite(x) || x < .000001 || x > 100000))
-            throw new InvalidDataException("Script V/A/J exceeds the supported numeric range; reduce playback speed or amplitude.");
-        return values.Select(x => checked((ulong)Math.Ceiling(x * 1e6))).ToArray();
+        string[] names = ["Translation velocity", "Translation acceleration", "Translation jerk",
+            "Rotation velocity", "Rotation acceleration", "Rotation jerk"];
+        var encoded = new ulong[values.Length];
+        for (var i = 0; i < values.Length; i++)
+        {
+            var wireValue = Math.Ceiling(values[i] * 1e6);
+            if (!double.IsFinite(wireValue) || wireValue < 1 || wireValue > TCodeBufferedProtocol.MaxInteger)
+                throw new InvalidDataException(FormattableString.Invariant(
+                    $"{names[i]} ({values[i]:G9}) cannot be encoded as a positive protocol integer at 1e6 precision. No trajectory was sent."));
+            encoded[i] = checked((ulong)wireValue);
+        }
+        return encoded;
     }
 
     public static BufferedSessionLimits FromScript(List<BufferedNode>[] nodes, double[] positions)

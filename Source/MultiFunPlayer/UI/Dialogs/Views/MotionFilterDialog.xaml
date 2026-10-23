@@ -1,0 +1,70 @@
+<UserControl x:Class="MultiFunPlayer.UI.Dialogs.Views.MotionFilterDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:s="https://github.com/canton7/Stylet"
+             xmlns:material="http://materialdesigninxaml.net/winfx/xaml/themes"
+             x:ClassModifier="internal">
+    <ScrollViewer MaxHeight="760" VerticalScrollBarVisibility="Auto">
+        <StackPanel Width="700" Margin="24">
+            <TextBlock Text="六轴脚本滤波器" FontSize="22" Margin="0 0 0 8"/>
+            <TextBlock Text="削弱高频、细碎的快速反向动作，保留较慢的整体运动。六轴共用参数，分别计算。"
+                       TextWrapping="Wrap" Opacity=".75" Margin="0 0 0 12"/>
+            <CheckBox Content="启用六轴滤波 · L0 / L1 / L2 / R0 / R1 / R2" IsChecked="{Binding Enabled}" Margin="0 0 0 16"/>
+            <Grid Margin="0 0 0 12">
+                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                <TextBox Text="{Binding ThresholdPercent, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"
+                         material:HintAssist.Hint="速度阈值（% 行程/秒）" material:HintAssist.IsFloating="True" Margin="0 0 16 0"/>
+                <TextBox Grid.Column="1" Text="{Binding SmoothingMilliseconds, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"
+                         material:HintAssist.Hint="平滑时间（ms，越大越柔和）" material:HintAssist.IsFloating="True"/>
+            </Grid>
+            <TextBlock Text="100% 行程/秒 = 每秒走完整行程一次。双向一阶低通处理脚本，不增加持续的单向滤波延迟；快速短动作幅度会减小。"
+                       TextWrapping="Wrap" Opacity=".7" FontSize="12" Margin="0 0 0 14"/>
+            <DockPanel Margin="0 0 0 6">
+                <Button DockPanel.Dock="Right" Content="刷新脚本预览" Command="{s:Action RefreshPreview}" Margin="8 0 0 0"/>
+                <TextBlock Text="{Binding RangeLabel}" VerticalAlignment="Center"/>
+            </DockPanel>
+            <Grid Margin="0 0 0 8">
+                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                <Slider Minimum="0" Maximum="{Binding PreviewMaximum}" Value="{Binding PreviewStart}" VerticalAlignment="Center" Margin="0 0 16 0"/>
+                <TextBox Grid.Column="1" Text="{Binding PreviewStart, UpdateSourceTrigger=PropertyChanged, StringFormat=F1}" material:HintAssist.Hint="起点 / 秒" Margin="0 0 8 0"/>
+                <TextBox Grid.Column="2" Text="{Binding PreviewSeconds, UpdateSourceTrigger=PropertyChanged}" material:HintAssist.Hint="窗口 / 秒"/>
+            </Grid>
+            <StackPanel Orientation="Horizontal" Margin="0 4 0 8">
+                <TextBlock Text="━ 原始脚本" Foreground="#8895AA" Margin="0 0 24 0"/>
+                <TextBlock Text="━ 滤波结果" Foreground="#009F8B"/>
+                <TextBlock Text="纵轴 0–100% · 横轴为媒体时间" Opacity=".6" Margin="24 0 0 0" FontSize="12"/>
+            </StackPanel>
+            <ItemsControl ItemsSource="{Binding Axes}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0 0 10 10">
+                                <DockPanel Margin="0 0 0 3">
+                                    <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0 0 10 0"/>
+                                    <TextBlock Text="{Binding Summary}" FontSize="11" Opacity=".65" VerticalAlignment="Center"/>
+                                </DockPanel>
+                                <Border Background="#101C2C" CornerRadius="4" Padding="4" Height="65">
+                                    <Viewbox Stretch="Fill">
+                                        <Canvas Width="600" Height="64" ClipToBounds="True">
+                                            <Line X1="0" Y1="32" X2="600" Y2="32" Stroke="#334155" StrokeDashArray="3 4"/>
+                                            <Polyline Points="{Binding Original}" Stroke="#8895AA" StrokeThickness="1.1"/>
+                                            <Polyline Points="{Binding Filtered}" Stroke="#38E0C2" StrokeThickness="1.8"/>
+                                        </Canvas>
+                                    </Viewbox>
+                                </Border>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <ProgressBar Height="3" IsIndeterminate="{Binding IsBusy}" Margin="0 8 0 8"/>
+            <TextBlock Text="{Binding Status}" TextWrapping="Wrap" FontSize="12" Margin="0 0 0 8"/>
+            <TextBlock Text="{Binding AppliedStatus}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0 0 0 12"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="应用到六轴" Command="{s:Action Apply}" IsEnabled="{Binding CanApply}" Margin="0 0 12 0"/>
+                <Button Content="关闭" Command="{s:Action Dismiss}"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

@@ -6,6 +6,8 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../MultiFunPlayer/OutputTarget/Tracking/*.cs" Link="Production/Tracking/%(Filename)%(Extension)" />
+    <None Update="TestData/tracking-cad.frames" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" PrivateAssets="all" />
@@ -15,8 +17,10 @@
        without requiring the WPF desktop runtime. -->
   <ItemGroup>
     <Compile Include="../MultiFunPlayer/Common/Keyframe.cs" Link="Production/Keyframe.cs" />
+    <Compile Include="../MultiFunPlayer/Common/MotionScriptFilter.cs" Link="Production/MotionScriptFilter.cs" />
     <Compile Include="../MultiFunPlayer/Common/BufferedPlaybackSnapshot.cs" Link="Production/BufferedPlaybackSnapshot.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedProtocol.cs" Link="Production/TCodeBufferedProtocol.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeDeviceDiagnostic.cs" Link="Production/TCodeDeviceDiagnostic.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlan.cs" Link="Production/TCodeBufferedPlan.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/BufferedSessionLimits.cs" Link="Production/BufferedSessionLimits.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedClient.cs" Link="Production/TCodeBufferedClient.cs" />

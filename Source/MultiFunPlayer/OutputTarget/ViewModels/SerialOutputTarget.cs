@@ -15,6 +15,8 @@ using System.IO;
 using System.IO.Ports;
 using System.Management;
 using System.Text.RegularExpressions;
+using MultiFunPlayer.OutputTarget.Tracking;
+using MultiFunPlayer.UI.Tracking;
 
 namespace MultiFunPlayer.OutputTarget.ViewModels;
 
@@ -23,11 +25,44 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     : ThreadAbstractOutputTarget(instanceIndex, eventAggregator, valueProvider)
 {
     private CancellationTokenSource _refreshCancellationSource = new();
+    private readonly IDeviceAxisValueProvider _filterProvider = valueProvider;
     private readonly object _modeLock = new();
     private CancellationTokenSource _motionCancellation;
     private SerialPresetSession _presetSession;
     private SerialManualSession _manualSession;
+    private readonly TrackingMonitor _trackingMonitor = new();
+    private TrackingWindow _trackingWindow;
+    public bool TrackingEnabled { get; set; } = true;
+    protected override TrackingMonitor Tracking => _trackingMonitor;
+    protected override bool TrackingRequested => TrackingEnabled;
+    // Leave ACK headroom even if a UART user keeps the old 115200 setting.
+    protected override int TrackingPeriodMs => BaudRate <= 115200 ? 50 : BaudRate <= 230400 ? 40 : 20;
+    public void OpenTracking()
+    {
+        if (_trackingWindow != null) { _trackingWindow.Activate(); return; }
+        _trackingWindow = new TrackingWindow(_trackingMonitor) { Owner = System.Windows.Application.Current.MainWindow };
+        _trackingWindow.Closed += (_, _) => _trackingWindow = null;
+        _trackingWindow.Show(); // Nonmodal: playback controls remain available.
+    }
     public bool IsManualOpen { get; private set; }
+    public bool IsFilterOpen { get; private set; }
+    public bool CanOpenFilter => !IsFilterOpen && !IsPresetOpen && !IsManualOpen;
+
+    public async Task OpenFilter()
+    {
+        if (!CanOpenFilter) return;
+        IsFilterOpen = true;
+        try
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            await DialogHelper.ShowAsync(new MotionFilterDialog(_filterProvider), "RootDialog").ConfigureAwait(true);
+        }
+        finally
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            IsFilterOpen = false;
+        }
+    }
     public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen;
 
     public async Task OpenManual()
@@ -411,7 +446,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
                 tcodeInputProcessor.Parse(receivedString);
             }
         }
-        catch (Exception e) when (e is TimeoutException or IOException)
+        catch (Exception e) when (e is TimeoutException or IOException or InvalidDataException)
         {
             Logger.Error(e, $"{Identifier} failed with exception");
             if (!IsPresetOpen)
@@ -439,6 +474,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             settings[nameof(UpdateType)] = JToken.FromObject(UpdateType);
             settings[nameof(SelectedSerialPort)] = SelectedSerialPortDeviceId;
             settings[nameof(BaudRate)] = BaudRate;
+            settings[nameof(TrackingEnabled)] = TrackingEnabled;
             settings[nameof(Parity)] = JToken.FromObject(Parity);
             settings[nameof(StopBits)] = JToken.FromObject(StopBits);
             settings[nameof(DataBits)] = DataBits;
@@ -458,6 +494,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
                 SelectSerialPortByDeviceId(selectedSerialPort);
 
             if (settings.TryGetValue<int>(nameof(BaudRate), out var baudRate)) BaudRate = baudRate;
+            if (settings.TryGetValue<bool>(nameof(TrackingEnabled), out var trackingEnabled)) TrackingEnabled = trackingEnabled;
             if (settings.TryGetValue<Parity>(nameof(Parity), out var parity)) Parity = parity;
             if (settings.TryGetValue<StopBits>(nameof(StopBits), out var stopBits)) StopBits = stopBits;
             if (settings.TryGetValue<int>(nameof(DataBits), out var dataBits)) DataBits = dataBits;
@@ -500,6 +537,10 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
 
     protected override void Dispose(bool disposing)
     {
+        _trackingMonitor.Dispose();
+        var window = _trackingWindow;
+        if (window != null && !window.Dispatcher.HasShutdownStarted)
+            window.Dispatcher.BeginInvoke(() => window.Close());
         _refreshCancellationSource?.Cancel();
         _refreshCancellationSource?.Dispose();
         _refreshCancellationSource = null;

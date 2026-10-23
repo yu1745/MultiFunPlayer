@@ -85,8 +85,9 @@ public class FirmwareTests
         var token = timeout.Token;
         await client.SynchronizeAsync(token);
         var pose = await client.QueryPoseAsync(token);
-        var plan = TCodeBufferedPlan.CreateSession(ProtocolAndPlanTests.Snapshot([new(0, 0), new(.2, 1), new(.4, 0)]), pose);
-        Assert.Equal(9999UL, plan.Nodes[0][1].Position);
+        var plan = TCodeBufferedPlan.CreateSession(ProtocolAndPlanTests.Snapshot([new(0, .82), new(.058, .15), new(.116, .82)]), pose);
+        Assert.Equal(1500UL, plan.Nodes[0][1].Position);
+        Assert.True(plan.Limits.Translation.Jerk > 100000);
         var start = client.Now + 3000000;
         await client.BeginAsync(1, start, plan.Limits, token);
         foreach (var node in plan.Nodes[0])
@@ -211,13 +212,23 @@ public class FirmwareTests
         var media = new Media();
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
         var states = new ConcurrentQueue<string>();
+        var diagnostics = new ConcurrentQueue<string>();
         var runner = new TCodeBufferedPlayback(client, media.Snapshot, media.SetPlaying,
-            () => 0, () => true, s => states.Enqueue(s.State));
+            () => 0, () => true, s => states.Enqueue(s.State), diagnostics.Enqueue);
         var run = runner.RunAsync(cancellation.Token);
         await WaitFor(() => states.Contains("Playing"), run);
         media.Drift(1);
         var error = await Assert.ThrowsAsync<IOException>(() => run.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Contains("150 ms", error.Message);
+        Assert.Contains("expected=", error.Message);
+        Assert.Contains("drift=", error.Message);
+        var clockError = Assert.Single(diagnostics.Where(s => s.StartsWith("CLOCK ERROR")));
+        Assert.Contains("actualSeconds=", clockError);
+        Assert.Contains("expectedSeconds=", clockError);
+        Assert.Contains("direction=media-ahead", clockError);
+        Assert.Contains("deviceNowUs=", clockError);
+        Assert.Contains("status=[", clockError);
+        Assert.Contains(diagnostics, s => s.StartsWith("CLOCK SAMPLE"));
         Assert.Equal(0UL, client.Status[5]);
         Assert.False(media.Snapshot().IsPlaying);
     }

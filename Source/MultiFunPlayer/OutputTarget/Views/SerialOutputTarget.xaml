@@ -85,6 +85,18 @@
                     <material:PackIcon Kind="Tune" Width="20" Height="20"/>
                 </Button>
 
+                <Button DockPanel.Dock="Left" Command="{s:Action OpenFilter}"
+                        IsEnabled="{Binding CanOpenFilter}" ToolTip="六轴脚本滤波器 · 预览并平滑快速反向动作"
+                        Padding="0" Style="{StaticResource MaterialDesignProgressToolBarButton}">
+                    <material:PackIcon Kind="FilterOutline" Width="20" Height="20"/>
+                </Button>
+
+                <Button DockPanel.Dock="Left" Command="{s:Action OpenTracking}"
+                        ToolTip="动作跟随监测 · 目标曲线、误差、延迟与幅度"
+                        Padding="0" Style="{StaticResource MaterialDesignProgressToolBarButton}">
+                    <material:PackIcon Kind="ChartLine" Width="20" Height="20"/>
+                </Button>
+
                 <ToggleButton DockPanel.Dock="Left"
                               Style="{StaticResource MaterialDesignToolBarToggleButton}"
                               IsChecked="{Binding AutoConnectEnabled}"
@@ -144,6 +156,8 @@
         </Expander.Header>
 
         <StackPanel Margin="20">
+            <CheckBox IsChecked="{Binding TrackingEnabled}" Content="实时跟随监测（Buffered Update）"
+                      ToolTip="921600 下默认 50 Hz；115200 下自动降为 20 Hz。需配套 P4 固件。" Margin="0 0 0 12"/>
             <DockPanel Margin="0 0 0 20" LastChildFill="True">
                 <DockPanel DockPanel.Dock="Left"
                            VerticalAlignment="Center"

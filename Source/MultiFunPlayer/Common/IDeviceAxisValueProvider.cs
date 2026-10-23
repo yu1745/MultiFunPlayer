@@ -10,7 +10,9 @@ internal enum DeviceAxisUpdateType
 internal interface IDeviceAxisValueProvider
 {
     public double GetValue(DeviceAxis axis);
-    public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot();
+    public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot(bool applyMotionFilter = true);
+    public MotionFilterSettings GetMotionFilterSettings();
+    public void ApplyMotionFilterSettings(MotionFilterSettings settings);
 
     public void BeginEventPolling(object context);
     public void EndEventPolling(object context);

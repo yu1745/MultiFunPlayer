@@ -133,3 +133,32 @@ This native test covers reception through six-axis timed reference processing.
 It does not cover the physical serial/C3 drivers, full FreeRTOS scheduling,
 IK/CAN/motor output, Windows UI or actual media players. See CTW's
 `test/p4_native/README.md` for the exact platform substitutions.
+
+## Device error diagnostics (extension v1)
+
+Buffered Update now negotiates `op=11, enabled=1` after synchronization. New P4
+firmware returns capability frame 104 and sends CRC-protected numeric event frames
+105 before normal replies. Legacy firmware remains usable and logs that detailed
+device diagnostics are unavailable; legacy clients never receive these frames
+unless they explicitly opt in.
+
+The receive pump records `DEVICE ERROR` and `DEVICE CONTEXT` in
+`Logs/buffered-playback.log`, independently of the ACK channel. Relevant device
+reasons are also appended to command exceptions and playback errors in the UI and
+`Logs/application.log`. Diagnostic events carry the device boot/session, event ID,
+device timestamp, reason, axis/motor, failure detail and exact float32 metrics.
+They distinguish queue underrun from reference rejection, pause braking failure,
+executor state changes, motor feedback faults and CAN send failures. A failed
+pause is reported as a pause failure before resume rather than a lost trajectory.
+
+P4 captures events without doing serial I/O in the compute/CAN tasks. Events are
+sent at the next status/command exchange (normally about 100–200 ms), and STOP
+does not erase captured evidence. On connection, verify that the diagnostic log
+contains `DEVICE diagnostics enabled version=1`; `CONNECT diagnostics-v2`
+identifies the new MFP receiver. Power loss or a completely stalled device can
+still prevent the last event from reaching the host.
+
+The protocol schema and stable reason/metric definitions are documented in the
+CTW checkout at `docs/tcode_v4_diagnostics.md`. The native integration suite
+injects a 60 ms control stall during a real production pause, then verifies that
+MFP logs the specific fault, all six axis snapshots and no underrun before STOP.

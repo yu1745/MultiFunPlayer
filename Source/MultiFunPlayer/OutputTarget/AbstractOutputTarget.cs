@@ -1,6 +1,7 @@
 using MultiFunPlayer.Common;
 using MultiFunPlayer.Input;
 using MultiFunPlayer.OutputTarget.TCodeBuffered;
+using MultiFunPlayer.OutputTarget.Tracking;
 using MultiFunPlayer.Property;
 using MultiFunPlayer.Shortcut;
 using MultiFunPlayer.UI;
@@ -141,16 +142,26 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
         }
     }
 
+    protected virtual TrackingMonitor Tracking => null;
+    protected virtual bool TrackingRequested => false;
+    protected virtual int TrackingPeriodMs => 20;
     protected async Task BufferedUpdateAsync(Func<string, CancellationToken, Task> write,
         Func<CancellationToken, Task<string>> read, CancellationToken token)
     {
         var context = (TCodeBufferedUpdateContext)UpdateContexts[DeviceAxisUpdateType.BufferedUpdate];
         var diagnosticLogger = LogManager.GetLogger("MultiFunPlayer.BufferedDiagnostics");
         var connection = Guid.NewGuid().ToString("N")[..8];
-        void Diagnostic(string message) => diagnosticLogger.Info("[{0} {1}] {2}", Identifier, connection, message);
-        Diagnostic("CONNECT diagnostics-v1");
+        void Diagnostic(string message)
+        {
+            if (message.StartsWith("DEVICE ERROR", StringComparison.Ordinal) || message.StartsWith("CLOCK ERROR", StringComparison.Ordinal))
+                diagnosticLogger.Error("[{0} {1}] {2}", Identifier, connection, message);
+            else diagnosticLogger.Info("[{0} {1}] {2}", Identifier, connection, message);
+        }
+        Diagnostic("CONNECT diagnostics-v2");
         using var control = new BufferedMediaControl(EventAggregator, Diagnostic);
-        await using var client = new TCodeBufferedClient(write, read, diagnostic: Diagnostic);
+        Tracking?.BeginConnection();
+        await using var client = new TCodeBufferedClient(write, read, diagnostic: Diagnostic,
+            tracking: Tracking, trackingEnabled: () => TrackingRequested, trackingPeriodMs: () => TrackingPeriodMs);
         var playback = new TCodeBufferedPlayback(client, GetSnapshot, control.SetPlaying,
             () => control.Revision, () => control.WantsPlayback, status =>
             {
@@ -171,6 +182,7 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
         finally
         {
             Diagnostic($"DISCONNECT finalState={context.State}");
+            Tracking?.SetAvailability("连接已结束，显示为历史数据");
             if (!context.State.StartsWith("Error:") && context.State != "STOP not acknowledged")
                 context.State = "Disconnected";
         }

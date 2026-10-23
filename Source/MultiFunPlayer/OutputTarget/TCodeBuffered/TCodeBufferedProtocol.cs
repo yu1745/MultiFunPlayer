@@ -58,8 +58,9 @@ internal static class TCodeBufferedProtocol
     }
 }
 
-internal sealed class TCodeBufferedException(ulong code, ulong operation, ulong state)
-    : IOException($"TCode 0.4 rejected operation {operation}: error {code}, device state {state}.")
+internal sealed class TCodeBufferedException(ulong code, ulong operation, ulong state, string diagnostic = null)
+    : IOException($"TCode 0.4 rejected operation {operation}: error {code}, device state {state}." +
+        (string.IsNullOrWhiteSpace(diagnostic) ? "" : " P4: " + diagnostic))
 {
     public ulong Code { get; } = code;
 }

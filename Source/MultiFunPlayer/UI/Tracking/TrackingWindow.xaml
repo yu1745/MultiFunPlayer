@@ -1,0 +1,94 @@
+<Window x:Class="MultiFunPlayer.UI.Tracking.TrackingWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:MultiFunPlayer.UI.Tracking"
+ x:ClassModifier="internal" Title="动作跟随监测 · MultiFunPlayer" Width="1080" Height="900" MinWidth="900" MinHeight="640"
+ Background="#111827" Foreground="#E2E8F0" WindowStartupLocation="CenterOwner">
+ <Window.Resources>
+  <Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E2E8F0"/></Style>
+  <Style TargetType="ComboBox">
+   <Setter Property="Background" Value="#E2E8F0"/><Setter Property="Foreground" Value="#0F172A"/>
+   <Setter Property="ItemTemplate"><Setter.Value><DataTemplate><TextBlock Text="{Binding}" Foreground="#0F172A"/></DataTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="DataGrid">
+   <Setter Property="Background" Value="#172033"/><Setter Property="Foreground" Value="#E2E8F0"/>
+   <Setter Property="RowBackground" Value="#172033"/><Setter Property="AlternatingRowBackground" Value="#111B2D"/>
+   <Setter Property="BorderThickness" Value="0"/><Setter Property="AutoGenerateColumns" Value="False"/>
+   <Setter Property="IsReadOnly" Value="True"/><Setter Property="CanUserAddRows" Value="False"/>
+   <Setter Property="CanUserDeleteRows" Value="False"/><Setter Property="CanUserReorderColumns" Value="False"/>
+   <Setter Property="HeadersVisibility" Value="Column"/><Setter Property="GridLinesVisibility" Value="None"/>
+   <Setter Property="RowHeight" Value="29"/><Setter Property="FontSize" Value="12"/>
+  </Style>
+  <Style TargetType="DataGridColumnHeader">
+   <Setter Property="Background" Value="#223047"/><Setter Property="Foreground" Value="#B8C7DB"/>
+   <Setter Property="Padding" Value="8"/><Setter Property="BorderThickness" Value="0"/>
+  </Style>
+  <Style TargetType="DataGridCell"><Setter Property="Padding" Value="8 3"/><Setter Property="BorderThickness" Value="0"/></Style>
+ </Window.Resources>
+ <ScrollViewer Background="#111827" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+  <StackPanel Margin="24">
+   <DockPanel>
+    <Button DockPanel.Dock="Right" Content="重置本机统计" Click="ResetClick" Padding="12 6" Background="#223047" Foreground="#D7E4F6"/>
+    <StackPanel>
+     <TextBlock Text="动作跟随监测" FontSize="24" FontWeight="SemiBold"/>
+     <TextBlock Text="{Binding State}" Foreground="#67E8F9" Margin="0 7 0 0" TextWrapping="Wrap"/>
+    </StackPanel>
+   </DockPanel>
+   <TextBlock Text="{Binding Health}" Foreground="#A8BAD2" FontSize="11" Margin="0 10 0 0" TextWrapping="Wrap"/>
+   <TextBlock Text="比较 P4 规划后的杆尖目标与编码器重建姿态。前六台电机协同解算五个并联轴，R0 使用独立编码器。" Foreground="#94A3B8" Margin="0 12 0 12" TextWrapping="Wrap"/>
+   <DockPanel Margin="0 0 0 10">
+    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+     <TextBlock Text="动作轴" VerticalAlignment="Center" Margin="0 0 8 0"/>
+     <ComboBox Width="72" ItemsSource="{Binding AxisNames}" SelectedIndex="{Binding SelectedAxis}" Margin="0 0 22 0"/>
+     <TextBlock Text="统计窗口" VerticalAlignment="Center" Margin="0 0 8 0"/>
+     <ComboBox Width="66" ItemsSource="{Binding Windows}" SelectedItem="{Binding WindowSeconds}"/>
+     <TextBlock Text="秒" VerticalAlignment="Center" Margin="7 0 0 0"/>
+    </StackPanel>
+    <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center"><Run Text="━━ 目标" Foreground="#CBD5E1"/><Run Text="     ━━ 估计实际" Foreground="#22D3EE"/></TextBlock>
+   </DockPanel>
+   <local:TrackingChart Height="190" Points="{Binding Points}" Unit="{Binding Unit}" Opacity="{Binding ChartOpacity}"/>
+   <TextBlock Text="位置误差 · 实际 − 目标" Foreground="#FBBF24" Margin="0 9 0 5" FontSize="11"/>
+   <local:TrackingChart Height="88" Points="{Binding Points}" Unit="{Binding Unit}" ErrorOnly="True" Opacity="{Binding ChartOpacity}"/>
+   <TextBlock Text="{Binding Timing}" Foreground="#94A3B8" FontSize="11" Margin="0 9 0 12" TextWrapping="Wrap"/>
+   <ItemsControl ItemsSource="{Binding Cards}">
+    <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="4"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate><DataTemplate>
+     <Border Background="#1A263A" CornerRadius="7" Margin="0 0 8 8" Padding="13 10" MinHeight="94" ToolTip="{Binding ToolTip}">
+      <StackPanel>
+       <TextBlock Text="{Binding Label}" Foreground="#A8BAD2" FontSize="12"/>
+       <TextBlock Text="{Binding Value}" FontSize="21" FontWeight="SemiBold" Margin="0 5 0 4" TextTrimming="CharacterEllipsis"/>
+       <TextBlock Text="{Binding Hint}" Foreground="#7F95B2" FontSize="10" TextWrapping="Wrap"/>
+      </StackPanel>
+     </Border>
+    </DataTemplate></ItemsControl.ItemTemplate>
+   </ItemsControl>
+   <TextBlock Text="各动作轴 · 平移 mm，旋转 °；延迟 ms，幅度 %" FontSize="13" FontWeight="SemiBold" Margin="0 9 0 8"/>
+   <DataGrid ItemsSource="{Binding Rows}" Height="210">
+    <DataGrid.Columns>
+     <DataGridTextColumn Header="轴" Binding="{Binding Axis}" Width="44"/>
+     <DataGridTextColumn Header="单位" Binding="{Binding Unit}" Width="45"/>
+     <DataGridTextColumn Header="实时误差" Binding="{Binding Error}" Width="80"/>
+     <DataGridTextColumn Header="RMS" Binding="{Binding Rms}" Width="70"/>
+     <DataGridTextColumn Header="P95" Binding="{Binding P95}" Width="70"/>
+     <DataGridTextColumn Header="延迟" Binding="{Binding Delay}" Width="75"/>
+     <DataGridTextColumn Header="幅度" Binding="{Binding Amplitude}" Width="75"/>
+     <DataGridTextColumn Header="超调" Binding="{Binding Overshoot}" Width="70"/>
+     <DataGridTextColumn Header="数据／估计状态" Binding="{Binding State}" Width="*"/>
+    </DataGrid.Columns>
+   </DataGrid>
+   <TextBlock Text="{Binding Quality}" Foreground="#A8BAD2" FontSize="11" TextWrapping="Wrap" Margin="0 12 0 10"/>
+   <Expander Header="电机诊断 · CAD 关节角（°），R0 独立" Foreground="#C5D3E6" Margin="0 0 0 12">
+    <DataGrid ItemsSource="{Binding Motors}" Height="240" Margin="0 8 0 0">
+     <DataGrid.Columns>
+      <DataGridTextColumn Header="电机" Binding="{Binding Motor}" Width="*"/>
+      <DataGridTextColumn Header="最终指令" Binding="{Binding Command}" Width="*"/>
+      <DataGridTextColumn Header="反馈" Binding="{Binding Actual}" Width="*"/>
+      <DataGridTextColumn Header="同时刻误差" Binding="{Binding Error}" Width="*"/>
+      <DataGridTextColumn Header="反馈年龄" Binding="{Binding Age}" Width="*"/>
+     </DataGrid.Columns>
+    </DataGrid>
+   </Expander>
+   <TextBlock Text="RMS / P95 保留真实滞后误差；幅度与转折超调使用延迟／主周期相位对齐。主频相位只对稳定周期显示。— 表示条件不足，鼠标悬停查看原因。姿态为 CAD 估计，不能测出全部弹性、间隙或附件变形。" Foreground="#7F95B2" FontSize="11" TextWrapping="Wrap"/>
+  </StackPanel>
+ </ScrollViewer>
+</Window>

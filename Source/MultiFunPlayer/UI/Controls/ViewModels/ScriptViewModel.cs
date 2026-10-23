@@ -42,6 +42,41 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
     private CancellationTokenSource _cancellationSource;
     private double _internalMediaPosition;
     private long _bufferedTimelineRevision;
+    private readonly object _motionFilterLock = new();
+    private readonly Dictionary<DeviceAxis, (KeyframeCollection Source, MotionFilterSettings Settings,
+        double Rate, double Scale, KeyframeCollection Result)> _motionFilterCache = [];
+    [JsonProperty] public MotionFilterSettings MotionFilter { get; private set; } = new();
+
+    public MotionFilterSettings GetMotionFilterSettings() => MotionFilter;
+
+    public void ApplyMotionFilterSettings(MotionFilterSettings settings)
+    {
+        if (settings == null || !settings.IsValid) throw new ArgumentException("滤波参数无效。");
+        lock (_motionFilterLock)
+        {
+            MotionFilter = settings;
+            _motionFilterCache.Clear();
+        }
+        Interlocked.Increment(ref _bufferedTimelineRevision);
+    }
+
+    private KeyframeCollection GetMotionKeyframes(DeviceAxis axis)
+    {
+        if (!AxisKeyframes.TryGetValue(axis, out var source) || source == null) return null;
+        var settings = MotionFilter;
+        if (!settings.Enabled || !MotionScriptFilter.Axes.Contains(axis.Name)) return source;
+        var rate = double.IsFinite(PlaybackSpeed) && PlaybackSpeed > 0 ? PlaybackSpeed : 1;
+        var scale = AxisSettings[axis].ScriptScale;
+        lock (_motionFilterLock)
+        {
+            if (_motionFilterCache.TryGetValue(axis, out var cached) && ReferenceEquals(cached.Source, source)
+                && cached.Settings == settings && cached.Rate == rate && cached.Scale == scale) return cached.Result;
+            var filtered = MotionScriptFilter.Apply(source, settings, rate, scale);
+            var result = ReferenceEquals(filtered, source) ? source : new KeyframeCollection(filtered);
+            _motionFilterCache[axis] = (source, settings, rate, scale, result);
+            return result;
+        }
+    }
 
     public bool IsPlaying { get; private set; }
     public double PlaybackSpeed { get; private set; }
@@ -152,7 +187,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
             }
 
             foreach (var axis in DeviceAxis.All)
-                contexts[axis].BeginUpdate();
+                contexts[axis].BeginUpdate(GetMotionKeyframes(axis));
 
             var dirty = false;
             foreach (var axis in DeviceAxis.All)
@@ -190,7 +225,8 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
                     if (settings.BypassScript)
                         return NoUpdate();
 
-                    if (!AxisKeyframes.TryGetValue(axis, out var keyframes) || keyframes == null || keyframes.Count == 0)
+                    var keyframes = context.Keyframes;
+                    if (keyframes == null || keyframes.Count == 0)
                         return NoUpdate();
 
                     var axisPosition = GetAxisPosition(axis);
@@ -270,7 +306,8 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
                     {
                         if (!settings.MotionProviderFillGaps)
                             return false;
-                        if (!AxisKeyframes.TryGetValue(axis, out var keyframes) || keyframes == null || keyframes.Count == 0)
+                        var keyframes = context.Keyframes;
+                        if (keyframes == null || keyframes.Count == 0)
                             return false;
 
                         if (context.InsideGap && keyframes.GapDuration(context.Index) >= settings.MotionProviderMinimumGapDuration)
@@ -696,6 +733,8 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
                 MediaPathModifiers.SetFrom(mediaPathModifiers);
 
             if (settings.TryGetValue<double>(nameof(GlobalOffset), out var globalOffset)) GlobalOffset = globalOffset;
+            if (settings.TryGetValue<MotionFilterSettings>(nameof(MotionFilter), out var motionFilter)
+                && motionFilter != null && motionFilter.IsValid) ApplyMotionFilterSettings(motionFilter);
             if (settings.TryGetValue<bool>(nameof(ValuesContentVisible), out var valuesContentVisible)) ValuesContentVisible = valuesContentVisible;
             if (settings.TryGetValue<bool>(nameof(MediaContentVisible), out var mediaContentVisible)) MediaContentVisible = mediaContentVisible;
             if (settings.TryGetValue<bool>(nameof(AxisContentVisible), out var axisContentVisible)) AxisContentVisible = axisContentVisible;
@@ -754,13 +793,13 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
     private double GetAxisPosition(DeviceAxis axis) => MediaPosition - GlobalOffset - AxisSettings[axis].Offset;
     public double GetValue(DeviceAxis axis) => MathUtils.Clamp01(AxisStates[axis].Value);
 
-    public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot()
+    public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot(bool applyMotionFilter = true)
     {
         var axes = new List<BufferedScriptAxis>();
         foreach (var axis in DeviceAxis.All)
         {
             var settings = AxisSettings[axis];
-            var keyframes = AxisKeyframes[axis];
+            var keyframes = applyMotionFilter ? GetMotionKeyframes(axis) : AxisKeyframes[axis];
             if (settings.BypassScript || keyframes == null || keyframes.Count == 0)
                 continue;
 
@@ -2268,9 +2307,10 @@ internal sealed class AxisValueTransition
 
 internal sealed class AxisStateUpdateContext(AxisModel model)
 {
-    private readonly AxisModel _model = model;
     private readonly AxisState _state = model.State;
     private readonly AxisSettings _settings = model.Settings;
+    public KeyframeCollection Keyframes { get; private set; }
+    private bool _keyframesChanged;
 
     public int Index { get; set; }
     public bool Invalid => Index == AxisState.InvalidIndex;
@@ -2313,7 +2353,7 @@ internal sealed class AxisStateUpdateContext(AxisModel model)
     private static bool ValueChanged(double last, double current, double epsilon)
         => Math.Abs(last - current) > epsilon || (double.IsFinite(current) ^ double.IsFinite(last));
 
-    public void BeginUpdate()
+    public void BeginUpdate(KeyframeCollection keyframes)
     {
         _state.BeginUpdate();
 
@@ -2322,7 +2362,9 @@ internal sealed class AxisStateUpdateContext(AxisModel model)
         TransitionValue = double.NaN;
         MotionProviderValue = double.NaN;
 
-        Index = _state.Index;
+        _keyframesChanged = !ReferenceEquals(Keyframes, keyframes);
+        Index = _keyframesChanged ? AxisState.InvalidIndex : _state.Index;
+        Keyframes = keyframes;
     }
 
     public void EndUpdate(double deltaTime)
@@ -2354,9 +2396,9 @@ internal sealed class AxisStateUpdateContext(AxisModel model)
         {
             _state.BroadcastEvent.Set(new DeviceAxisAutoHomeEvent(_settings.AutoHomeTargetValue, _settings.AutoHomeDuration));
         }
-        else if (LastIndex != Index)
+        else if (_keyframesChanged || LastIndex != Index)
         {
-            var keyframes = _model.Script?.Keyframes;
+            var keyframes = Keyframes;
             var scriptEvent = new DeviceAxisScriptEvent(
                 keyframes?.ValidateIndex(Index) == true ? keyframes[Index] : null,
                 keyframes?.ValidateIndex(Index + 1) == true ? keyframes[Index + 1] : null);
