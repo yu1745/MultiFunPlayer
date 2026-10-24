@@ -14,11 +14,22 @@ settings remain configurable in the existing Serial settings panel.
 Load scripts for any of `L0`, `L1`, `L2`, `R0`, `R1`, `R2`, enable the desired
 output axes, and start media playback. The connected media source must support
 MFP play/pause commands and report its playback state. MFP pauses it during clock
-synchronization and preloading, calculates positioning using script-derived session limits, then
-resumes it at the agreed device epoch. Preparation includes three seconds of lead
-and at least one second of positioning, potentially longer at low limits.
+synchronization and preloading, and calculates positioning using script-derived session limits.
+P4 holds at the script's first node while MFP requests media playback. After the
+source acknowledges Play, MFP releases that gate and both sides shift their queued
+timestamps by the wait duration. Player startup need not be immediate; pause/play
+acknowledgements may take up to 15 seconds. Device status remains monitored during
+the wait and its queue cannot run dry merely because the player has not started.
+The positioning duration and preload lead are calculated from the script and link latency.
 A media source that does not acknowledge pause or
 play is rejected before continuing playback.
+
+This startup handshake requires P4 opcodes 13 (`ARM_GATED`, script boundary in
+device microseconds) and 14 (`RELEASE_MEDIA`, no arguments). Update P4 and MFP
+together. Old firmware is rejected before arming motion; C3 needs no change.
+Release returns the existing 102 timing reply, with the timestamp shift at index 8
+and the release epoch at indices 9/10. Retries are idempotent. The 150 ms media
+clock protection after release remains in effect.
 
 The settings panel shows the current state, clock uncertainty estimate and
 remaining unsealed buffer and translation/rotation script V/A/J. A completed trajectory holds its final positions

@@ -72,7 +72,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         Trace("start", snapshot());
         report(new("Pausing media for preload", client.UncertaintyMilliseconds));
         if (snapshot().IsPlaying) setPlaying(false);
-        var deadline = TCodeBufferedClient.HostMicroseconds + 2000000;
+        var deadline = TCodeBufferedClient.HostMicroseconds + 15000000;
         while (snapshot().IsPlaying)
         {
             if (TCodeBufferedClient.HostMicroseconds > deadline)
@@ -119,7 +119,9 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         report(new("Preloading", client.UncertaintyMilliseconds, Limits: plan.Limits));
         if (!await RefillAsync(ChangedWhilePreparing, start + 1000000).ConfigureAwait(false)) { await StopAsync(); RestartPreparation(); return; }
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
-        await client.SendAsync(4, token).ConfigureAwait(false);
+        // New firmware positions and freezes its timeline at this exact node.
+        // An old firmware rejects op 13 before any motion is armed.
+        await client.ArmMediaAsync(epoch, token).ConfigureAwait(false);
         diagnostic?.Invoke($"PREP {preparation} armed nowUs={client.Now} startUs={start} mediaEpochUs={epoch}");
         report(new("Positioning", client.UncertaintyMilliseconds, Limits: plan.Limits));
         var nextPositioningRefill = 0UL;
@@ -140,14 +142,32 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
         Trace("request play", snapshot());
         setPlaying(true);
-        deadline = TCodeBufferedClient.HostMicroseconds + 1000000;
+        deadline = TCodeBufferedClient.HostMicroseconds + 15000000;
+        var nextMediaQuery = 0UL;
         while (!snapshot().IsPlaying)
         {
-            if (controlRevision() != controls) { await StopAsync(); RestartPreparation(); return; }
+            if (controlRevision() != controls || !source.HasSameTimeline(snapshot()))
+            { await StopAsync(); RestartPreparation(); return; }
             if (TCodeBufferedClient.HostMicroseconds > deadline)
                 throw new IOException("Media source did not acknowledge play; buffered playback stopped.");
+            if (client.Now >= nextMediaQuery)
+            {
+                await client.SendAsync(0, token).ConfigureAwait(false);
+                if (client.Status[5] is not (2 or 3))
+                    throw client.DeviceStateException("P4 media-start hold failed.");
+                nextMediaQuery = client.Now + 200000;
+            }
             await Task.Delay(10, token).ConfigureAwait(false);
         }
+        if (controlRevision() != controls || !source.HasSameTimeline(snapshot()))
+        { await StopAsync(); RestartPreparation(); return; }
+        var released = await client.ReleaseMediaAsync(token).ConfigureAwait(false);
+        var releaseShift = released[8];
+        epoch = checked(epoch + releaseShift);
+        for (var axis = 0; axis < 6; axis++)
+            for (var i = 0; i < nodes[axis].Count; i++)
+                nodes[axis][i] = nodes[axis][i] with { Microseconds = checked(nodes[axis][i].Microseconds + releaseShift) };
+        diagnostic?.Invoke($"MEDIA released shiftUs={releaseShift} mediaEpochUs={epoch}");
         var nextRefill = 0UL;
         var nextClockSample = 0UL;
         Trace("play acknowledged", snapshot());

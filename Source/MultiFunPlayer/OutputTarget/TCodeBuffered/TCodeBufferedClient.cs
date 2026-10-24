@@ -178,6 +178,14 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     public Task<ulong[]> QueryTimingAsync(CancellationToken token) => TimingAsync(9, token);
     public Task<ulong[]> PauseAsync(ulong cursor, CancellationToken token) => TimingAsync(7, token, cursor);
     public Task<ulong[]> ResumeAsync(ulong start, CancellationToken token) => TimingAsync(8, token, start);
+    public Task<ulong[]> ReleaseMediaAsync(CancellationToken token) => TimingAsync(14, token);
+
+    public async Task ArmMediaAsync(ulong epoch, CancellationToken token)
+    {
+        try { await SendAsync(13, token, epoch).ConfigureAwait(false); }
+        catch (TCodeBufferedException e) when (e.Code == 5)
+        { throw new IOException("P4 does not support the media-start gate. Update the P4 firmware together with MFP.", e); }
+    }
 
     public async Task RefreshPausedStatusAsync(CancellationToken token)
     {

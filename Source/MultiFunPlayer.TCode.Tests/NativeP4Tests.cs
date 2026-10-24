@@ -40,7 +40,8 @@ public class NativeP4Tests
             Assert.True(monitor.IsLive);
             Assert.InRange(monitor.Snapshot.Axes[0].Statistics.Rms.Value.Value, 0, .01);
             Assert.Contains(firmware.Requests, request => request[0] == 12);
-            Assert.Contains(firmware.Requests, request => request[0] == 4);
+            Assert.Contains(firmware.Requests, request => request[0] == 13);
+            Assert.Contains(firmware.Requests, request => request[0] == 14);
         }
         finally { cancellation.Cancel(); await run; }
         Assert.Contains(firmware.Requests, request => request[0] == 5);
@@ -181,14 +182,17 @@ public class NativeP4Tests
         Assert.Equal(13, begin.Length);
         Assert.Equal(1UL, begin[6]); // septic profile
         Assert.All(begin.Skip(7), value => Assert.InRange(value, 1UL, 100000000000UL));
+        var releaseIndex = firmware.Requests.FindIndex(fields => fields[0] == 14);
+        var releaseRequest = firmware.Requests[releaseIndex];
+        var release = firmware.Replies.First(fields => fields[0] == 102 && fields[1] == releaseRequest[1]);
         for (var axis = 0; axis < 6; axis++)
         {
-            var points = new List<(double Time, double Value)> { (begin[5], .5) };
-            foreach (var request in firmware.Requests.Where(fields => fields[0] == 2))
+            var points = new List<(double Time, double Value)> { (begin[5] + release[8], .5) };
+            foreach (var (request, index) in firmware.Requests.Select((request, index) => (request, index)).Where(item => item.request[0] == 2))
                 for (var offset = 4; offset < request.Length; offset += 3)
                     if ((int)request[offset] == axis)
-                        points.Add((request[offset + 1], (double)((float)request[offset + 2] * .0001f)));
-            var playing = rows.Where(row => row[3] is 3 or 4 && row[0] >= begin[5]).ToArray();
+                        points.Add((request[offset + 1] + (index < releaseIndex ? release[8] : 0), (double)((float)request[offset + 2] * .0001f)));
+            var playing = rows.Where(row => row[3] is 3 or 4 && row[0] >= release[10]).ToArray();
             Assert.True(playing.Length > 2500);
             var values = playing.Select(row => row[6 + axis * 4]).ToArray();
             Assert.True(values.Max() - values.Min() > .039, "Each axis must execute the script, not just ACK it.");
@@ -300,6 +304,7 @@ public class NativeP4Tests
         public bool DropFirstBeginAck { get; init; }
         public bool FragmentWrites { get; init; } = true;
         public List<ulong[]> Requests { get; } = [];
+        public List<ulong[]> Replies { get; } = [];
         public List<string> Wires { get; } = [];
         public NativeP4(bool injectPauseStall = false)
         {
@@ -342,6 +347,7 @@ public class NativeP4Tests
             {
                 var line = await _process.StandardOutput.ReadLineAsync(ct);
                 if (line == null) return null;
+                if (TCodeBufferedProtocol.TryDecode(line, out var reply)) Replies.Add(reply);
                 if (DropFirstBeginAck && !_dropped && TCodeBufferedProtocol.TryDecode(line, out var fields)
                     && fields[1] == _beginRequest)
                 { _dropped = true; continue; }

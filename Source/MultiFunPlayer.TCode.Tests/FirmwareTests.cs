@@ -19,6 +19,38 @@ public sealed class FirmwareFactAttribute : FactAttribute
 public class FirmwareTests
 {
     [FirmwareFact]
+    public async Task SlowPlayerStartsWithoutConsumingTheDeviceQueue()
+    {
+        using var firmware = new Firmware();
+        await using var client = firmware.Client();
+        var media = new Media();
+        var playing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var diagnostics = new ConcurrentQueue<string>();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Task delayedPlay = Task.CompletedTask;
+        var runner = new TCodeBufferedPlayback(client, media.Snapshot, value =>
+        {
+            if (!value) media.SetPlaying(false);
+            else delayedPlay = Task.Run(async () =>
+            {
+                await Task.Delay(2200, cancellation.Token);
+                media.SetPlaying(true);
+            });
+        }, () => 0, () => true,
+            status => { if (status.State == "Playing") playing.TrySetResult(); }, diagnostics.Enqueue);
+        var run = runner.RunAsync(cancellation.Token);
+        try
+        {
+            var completed = await Task.WhenAny(playing.Task, run).WaitAsync(TimeSpan.FromSeconds(8));
+            if (completed == run) await run;
+            Assert.True(playing.Task.IsCompletedSuccessfully);
+            Assert.Equal(0UL, client.Status[21]);
+            Assert.Contains(diagnostics, line => line.StartsWith("MEDIA released"));
+            Assert.DoesNotContain(diagnostics, line => line.StartsWith("CLOCK ERROR"));
+        }
+        finally { cancellation.Cancel(); await run; try { await delayedPlay; } catch (OperationCanceledException) { } }
+    }
+    [FirmwareFact]
     public async Task FiveAxisDevicePlaysAllScriptsWithoutRequiringTwistMotor()
     {
         using var firmware = new Firmware(55);
@@ -239,7 +271,7 @@ public class FirmwareTests
         using var firmware = new Firmware();
         await using var client = firmware.Client();
         var media = new Media();
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(18));
         var runner = new TCodeBufferedPlayback(client, media.Snapshot, _ => { },
             () => 0, () => true, _ => { });
         var error = await Assert.ThrowsAsync<IOException>(() => runner.RunAsync(cancellation.Token));
