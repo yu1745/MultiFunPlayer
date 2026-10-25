@@ -1,0 +1,273 @@
+{
+  "sessions": [
+    {
+      "id": "013252-c5be1e",
+      "path": "sessions/013252-c5be1e/events.jsonl.gz",
+      "originalBytes": 40879877,
+      "compressedBytes": 6144779,
+      "originalSha256": "4e0783799027aaca50bc2046b45951fc43ec7fbcef5d9c4643fb7037f0d0d7b8"
+    },
+    {
+      "id": "021708-603551",
+      "path": "sessions/021708-603551/events.jsonl.gz",
+      "originalBytes": 45813216,
+      "compressedBytes": 7613608,
+      "originalSha256": "cf8e591cbaf0e2799eeea0f0efa525c589666e829fda388c19a843674cea09fa"
+    }
+  ],
+  "scripts": [
+    {
+      "originalPath": "H:\\OSR库存\\jav\\(SIVR-300) S1 VR-Yuka Murakami (村上悠華)-C_180_3DH.funscript",
+      "fileName": "(SIVR-300) S1 VR-Yuka Murakami (村上悠華)-C_180_3DH.funscript",
+      "path": "scripts/001.funscript",
+      "bytes": 84866,
+      "sha256": "a08c73084548ee9340183967b80d2b4108c1adf60bf082163bf5b67e7ecca143"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Candy Love)Are you Looking Good Boy-scene1.funscript",
+      "fileName": "(Candy Love)Are you Looking Good Boy-scene1.funscript",
+      "path": "scripts/002.funscript",
+      "bytes": 112956,
+      "sha256": "905d182ab599575a2b04133b1305f27f3f6993676d5139c63fd7080f59857e58"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Candy Love)Are you Looking Good Boy-scene1.pitch.funscript",
+      "fileName": "(Candy Love)Are you Looking Good Boy-scene1.pitch.funscript",
+      "path": "scripts/003.funscript",
+      "bytes": 26622,
+      "sha256": "97ce8995f60d4c9f2ba3d984e0837d7c81001868c23ae211e0d113fb26fd2ad5"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Candy Love)Are you Looking Good Boy-scene1.roll.funscript",
+      "fileName": "(Candy Love)Are you Looking Good Boy-scene1.roll.funscript",
+      "path": "scripts/004.funscript",
+      "bytes": 5651,
+      "sha256": "000fd55ec3d729b19dcd13e49599eb889cab5f340b48dc127b9cbb6d3fb64a09"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Candy Love)Are you Looking Good Boy-scene1.surge.funscript",
+      "fileName": "(Candy Love)Are you Looking Good Boy-scene1.surge.funscript",
+      "path": "scripts/005.funscript",
+      "bytes": 161256,
+      "sha256": "f431d876be8d89bdfe933a4f89af799879d4ae3fca816661222ab9eef5415cb3"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Candy Love)Are you Looking Good Boy-scene1.sway.funscript",
+      "fileName": "(Candy Love)Are you Looking Good Boy-scene1.sway.funscript",
+      "path": "scripts/006.funscript",
+      "bytes": 4179,
+      "sha256": "319715d79c1bb9b4a8c4394075c53cc5bda47fffae24ea4cbfb539a3522212db"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Candy Love)Are you Looking Good Boy-scene1.twist.funscript",
+      "fileName": "(Candy Love)Are you Looking Good Boy-scene1.twist.funscript",
+      "path": "scripts/007.funscript",
+      "bytes": 2667,
+      "sha256": "78b0c282a006b0f9500a9bb6baed2fc34f81ebc516d0f8a8e29f7ee5b82eced8"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Secazz)Tifa Back Bar.funscript",
+      "fileName": "(Secazz)Tifa Back Bar.funscript",
+      "path": "scripts/008.funscript",
+      "bytes": 73251,
+      "sha256": "bd4b2f1de6a434d61756edb8aee1ad317f737635faf32e803ba4aa11c2bf6cf4"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Secazz)Tifa Back Bar.pitch.funscript",
+      "fileName": "(Secazz)Tifa Back Bar.pitch.funscript",
+      "path": "scripts/009.funscript",
+      "bytes": 43848,
+      "sha256": "ee9eae329d02e98426ab842e03d3f2f0396184dad79822d671480d66c0602492"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Secazz)Tifa Back Bar.roll.funscript",
+      "fileName": "(Secazz)Tifa Back Bar.roll.funscript",
+      "path": "scripts/010.funscript",
+      "bytes": 14482,
+      "sha256": "9a7b8ad821d1fbe177b78abb77bcf430aba8489fe732a673294204b3625e7a13"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Secazz)Tifa Back Bar.surge.funscript",
+      "fileName": "(Secazz)Tifa Back Bar.surge.funscript",
+      "path": "scripts/011.funscript",
+      "bytes": 20752,
+      "sha256": "305c706d1a3e5232863990e5811105adb2dababb1aa069f03accad5793203810"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Secazz)Tifa Back Bar.sway.funscript",
+      "fileName": "(Secazz)Tifa Back Bar.sway.funscript",
+      "path": "scripts/012.funscript",
+      "bytes": 14897,
+      "sha256": "5c88ca0115335d851030560172f402d62cf504168991286b234b079e6e105d2a"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(Secazz)Tifa Back Bar.twist.funscript",
+      "fileName": "(Secazz)Tifa Back Bar.twist.funscript",
+      "path": "scripts/013.funscript",
+      "bytes": 6348,
+      "sha256": "ae54b10d54b013df0395e793e54e43b2c0004b2af2eef52c5273ddfbe0430121"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.funscript",
+      "fileName": "(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.funscript",
+      "path": "scripts/014.funscript",
+      "bytes": 18448,
+      "sha256": "078e3d0fa5334f51d915c86436fa7bc166d69d052a1a76c2edb15362490a2559"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.pitch.funscript",
+      "fileName": "(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.pitch.funscript",
+      "path": "scripts/015.funscript",
+      "bytes": 20251,
+      "sha256": "cf4c91f2fd8d0610e72c0417f878ee112b929bebc08d05c677dc1fbaa98ecd2b"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.roll.funscript",
+      "fileName": "(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.roll.funscript",
+      "path": "scripts/016.funscript",
+      "bytes": 2179,
+      "sha256": "d7f321036b493ef8a48843e11f80ec9363e1fa619a02fae2595a5127f98a5f8b"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.sway.funscript",
+      "fileName": "(cowgirlTilted)(cowgirl)_Candy Love - Bratty Stepsister in Fishnet makes me Cum in 5 Minutes 1080p.sway.funscript",
+      "path": "scripts/017.funscript",
+      "bytes": 1955,
+      "sha256": "e41a41910ffc0ae31f34ddf4c9f42fae0f9b1085dafc5e558406daab7e707fe4"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe-Dance.funscript",
+      "fileName": "QingXiaoTuNe-Dance.funscript",
+      "path": "scripts/018.funscript",
+      "bytes": 18849,
+      "sha256": "f03760778d11648369a6db14eeba2ef7d4651b71fdd5b5bfb657b7a7051f9308"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe-Dance.pitch.funscript",
+      "fileName": "QingXiaoTuNe-Dance.pitch.funscript",
+      "path": "scripts/019.funscript",
+      "bytes": 14006,
+      "sha256": "cfcac2157eaeec4b2c6cac09d43ec074e564430971dba7c4811806ff3f1bf0b8"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe-Dance.roll.funscript",
+      "fileName": "QingXiaoTuNe-Dance.roll.funscript",
+      "path": "scripts/020.funscript",
+      "bytes": 14125,
+      "sha256": "aeb4ccb8b940d006b93f10c6135aa358650cb76b4f37697ddebdb4e69421cfda"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe-Dance.twist.funscript",
+      "fileName": "QingXiaoTuNe-Dance.twist.funscript",
+      "path": "scripts/021.funscript",
+      "bytes": 6869,
+      "sha256": "cc3321c0ef98e10048953c0f100161ddc76c51244ad727aa10081f5bf4a0b0e2"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe_2022-04-08.funscript",
+      "fileName": "QingXiaoTuNe_2022-04-08.funscript",
+      "path": "scripts/022.funscript",
+      "bytes": 37442,
+      "sha256": "95a4d0b65e3bce0b5f52dbdc6a75c27b41b1863c1d0f3e38d12a5261bdfa5fb3"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe_2022-04-08.pitch.funscript",
+      "fileName": "QingXiaoTuNe_2022-04-08.pitch.funscript",
+      "path": "scripts/023.funscript",
+      "bytes": 27810,
+      "sha256": "4876236b45c7b02d4570f88a6d28d637502a3c89cb4336ae447abfcdc6c5f2ab"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe_2022-04-08.roll.funscript",
+      "fileName": "QingXiaoTuNe_2022-04-08.roll.funscript",
+      "path": "scripts/024.funscript",
+      "bytes": 30821,
+      "sha256": "1b456df645cb229a1e1813c33de42d63b2e91e6be482f60d27c1327ca2467465"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe_2022-04-08.surge.funscript",
+      "fileName": "QingXiaoTuNe_2022-04-08.surge.funscript",
+      "path": "scripts/025.funscript",
+      "bytes": 27304,
+      "sha256": "0fe71b1e077db1370731651157fd84a7cdb52a22d5b118e897af90248c252e0c"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe_2022-04-08.sway.funscript",
+      "fileName": "QingXiaoTuNe_2022-04-08.sway.funscript",
+      "path": "scripts/026.funscript",
+      "bytes": 30200,
+      "sha256": "c22b5a57ca15de46746a6e14baa51d3e705909f8aaaf819c606d99f0d6da84c2"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\QingXiaoTuNe_2022-04-08.twist.funscript",
+      "fileName": "QingXiaoTuNe_2022-04-08.twist.funscript",
+      "path": "scripts/027.funscript",
+      "bytes": 5754,
+      "sha256": "88d5ad7d8a5180c71baa6fcb380da988c66c2c80b3b004c7c28833ecd4d1afee"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\SIVR-033-cd4-scene1.funscript",
+      "fileName": "SIVR-033-cd4-scene1.funscript",
+      "path": "scripts/028.funscript",
+      "bytes": 103930,
+      "sha256": "41175296db49832094aa856e88f114a4a26a10a83946cb590a24c17b6869740b"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\SIVR-033-cd4-scene1.pitch.funscript",
+      "fileName": "SIVR-033-cd4-scene1.pitch.funscript",
+      "path": "scripts/029.funscript",
+      "bytes": 130253,
+      "sha256": "b75ee23b1d182ab8e9f53cb09ea556ffd37351048d3842ca951fa162ed127392"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\SIVR-033-cd4-scene1.roll.funscript",
+      "fileName": "SIVR-033-cd4-scene1.roll.funscript",
+      "path": "scripts/030.funscript",
+      "bytes": 18711,
+      "sha256": "903f1b391d244126f1311b32cbefcbe251210c0b1789e8908260f33b9787ba09"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\SIVR-033-cd4-scene1.surge.funscript",
+      "fileName": "SIVR-033-cd4-scene1.surge.funscript",
+      "path": "scripts/031.funscript",
+      "bytes": 114532,
+      "sha256": "694de25c69e6c87848701905bed9cf08e28a3cdf3bcb5d4d6fc39c41b03aea72"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\SIVR-033-cd4-scene1.sway.funscript",
+      "fileName": "SIVR-033-cd4-scene1.sway.funscript",
+      "path": "scripts/032.funscript",
+      "bytes": 12816,
+      "sha256": "29165aa96d04c3a85ec4cc1d3048b99adf88a6bc113772d2c39cdc276b11e45a"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\SIVR-033-cd4-scene1.twist.funscript",
+      "fileName": "SIVR-033-cd4-scene1.twist.funscript",
+      "path": "scripts/033.funscript",
+      "bytes": 16373,
+      "sha256": "763118fa4e7db147049b16ac6eb2fff06e049c15edc4c009bee5701c516bcf75"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\asian riding.funscript",
+      "fileName": "asian riding.funscript",
+      "path": "scripts/034.funscript",
+      "bytes": 13172,
+      "sha256": "9afe912c0954ebf6f1c18a20ffc3b0313afad6c0f4e86529ef0c379600498507"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\asian riding.pitch.funscript",
+      "fileName": "asian riding.pitch.funscript",
+      "path": "scripts/035.funscript",
+      "bytes": 13687,
+      "sha256": "b53be9fd1249fafb14b1db83cee88a0725e18ed41183b4e3929d1ce955abb224"
+    },
+    {
+      "originalPath": "H:\\OSR库存\\多轴\\asian riding.roll.funscript",
+      "fileName": "asian riding.roll.funscript",
+      "path": "scripts/036.funscript",
+      "bytes": 11561,
+      "sha256": "9e7e8c23cfd25f2be0441b61735507ca3c22fb69a455b249b45de66fffe900e4"
+    }
+  ],
+  "videosIncluded": false
+}
