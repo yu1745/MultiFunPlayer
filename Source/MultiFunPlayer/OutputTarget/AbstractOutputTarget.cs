@@ -48,6 +48,10 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
         Logger = LogManager.GetLogger(GetType().FullName);
 
         AxisSettings = new Dictionary<DeviceAxis, DeviceAxisSettings>(DeviceAxis.All.ToDictionary(a => a, _ => new DeviceAxisSettings()));
+        foreach (var pair in AxisSettings)
+            pair.Value.PropertyChanged += (_, e) => TestRecording.Record("output_setting_changed", new {
+                Identifier, axis = pair.Key.Name, property = e.PropertyName,
+                pair.Value.Minimum, pair.Value.Maximum, pair.Value.Enabled });
         UpdateContexts = [];
 
         RegisterUpdateContexts();
@@ -153,6 +157,7 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
         var connection = Guid.NewGuid().ToString("N")[..8];
         void Diagnostic(string message)
         {
+            MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("diagnostic", new { Identifier, connection, message });
             if (message.StartsWith("DEVICE ERROR", StringComparison.Ordinal) || message.StartsWith("CLOCK ERROR", StringComparison.Ordinal))
                 diagnosticLogger.Error("[{0} {1}] {2}", Identifier, connection, message);
             else diagnosticLogger.Info("[{0} {1}] {2}", Identifier, connection, message);
@@ -197,6 +202,9 @@ internal abstract class AbstractOutputTarget : Screen, IOutputTarget
                     var settings = AxisSettings[DeviceAxis.Parse(a.Name)];
                     return a with { Minimum = settings.Minimum, Maximum = settings.Maximum };
                 }).ToArray();
+            MultiFunPlayer.OutputTarget.Tracking.TestRecording.State("output/" + Identifier, new {
+                Identifier, connection, source.Speed, source.Revision,
+                axes = axes.Select(a => new { a.Name, a.Offset, a.Scale, a.Invert, a.DefaultValue, a.Minimum, a.Maximum, a.UnsupportedReason }) });
             return source with { Axes = axes };
         }
     }

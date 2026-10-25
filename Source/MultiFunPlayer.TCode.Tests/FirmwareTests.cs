@@ -219,7 +219,7 @@ public class FirmwareTests
         await WaitFor(() => states.Contains("Playing"), run);
         media.Drift(1);
         var error = await Assert.ThrowsAsync<IOException>(() => run.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.Contains("150 ms", error.Message);
+        Assert.Contains("200 ms", error.Message);
         Assert.Contains("expected=", error.Message);
         Assert.Contains("drift=", error.Message);
         var clockError = Assert.Single(diagnostics.Where(s => s.StartsWith("CLOCK ERROR")));
@@ -227,6 +227,8 @@ public class FirmwareTests
         Assert.Contains("expectedSeconds=", clockError);
         Assert.Contains("direction=media-ahead", clockError);
         Assert.Contains("deviceNowUs=", clockError);
+        Assert.Contains("hostNowUs=", clockError);
+        Assert.Contains("thresholdMs=200", clockError);
         Assert.Contains("status=[", clockError);
         Assert.Contains(diagnostics, s => s.StartsWith("CLOCK SAMPLE"));
         Assert.Equal(0UL, client.Status[5]);

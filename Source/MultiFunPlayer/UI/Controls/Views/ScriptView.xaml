@@ -432,15 +432,7 @@
                 </ContextMenu>
             </controls:KeyframesHeatmap.ContextMenu>
         </controls:KeyframesHeatmap>
-
-        <controls:MarkersPreview Height="18"
-                                 Margin="0 0 0 20"
-                                 Panel.ZIndex="-1"
-                                 Bookmarks="{Binding AxisBookmarks, Mode=OneWay}"
-                                 Chapters="{Binding AxisChapters, Mode=OneWay}"
-                                 Position="{Binding MediaPosition, Mode=OneWay}"
-                                 SeekRequest="{s:Action OnSeekRequest}"
-                                 Duration="{Binding MediaDuration, Mode=OneWay}"/>
+        <controls:TestRecordingPanel/>
         <material:Card Margin="0 0 0 10" material:ShadowAssist.ShadowDepth="Depth1">
             <controls:NonReloadingTabControl ItemsSource="{Binding AxisModels}">
                 <TabControl.ItemTemplate>
@@ -1662,3 +1654,4 @@
         </material:Card>
     </StackPanel>
 </UserControl>
+

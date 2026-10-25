@@ -28,7 +28,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private readonly CancellationTokenSource _trackingCancellation = new();
     private Task _trackingPump;
     private ulong _trackingRequest = 1UL << 40;
-    private bool _trackingAttempted;
+    private bool _trackingAttempted, _motorAttempted, _motorUnsupported;
     private ulong _request;
     private ulong _query = 4294967296;
     private double _offset;
@@ -78,6 +78,16 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     }
                     var line = buffer.ToString();
                     buffer.Clear();
+                    var motorTelemetry = line.IndexOf(MotorHealthPacket.Prefix, StringComparison.Ordinal);
+                    if (motorTelemetry >= 0)
+                    {
+                        if (MotorHealthPacket.TryDecode(line[motorTelemetry..], out var health, out var healthError))
+                        {
+                            if (health.Boot == Boot && Boot != 0) _tracking?.AcceptMotor(health, Now);
+                        }
+                        else TestRecording.Record("motor_health_bad_packet", new { error = healthError });
+                        continue;
+                    }
                     var telemetry = line.IndexOf(TrackingPacket.Prefix, StringComparison.Ordinal);
                     if (telemetry >= 0)
                     {
@@ -393,6 +403,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     }
                     active = enabled;
                     if (!active) _tracking.SetAvailability("跟随监测已关闭");
+                    await RenewMotorHealthAsync(enabled, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 { _tracking.SetAvailability("跟随订阅暂未应答，正在重试；动作输出不受此超时控制"); }
@@ -401,6 +412,33 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error) { _tracking.SetAvailability("跟随回传不可用：" + error.Message); }
+    }
+
+    private async Task RenewMotorHealthAsync(bool enabled, CancellationToken token)
+    {
+        if (_motorUnsupported) return;
+        var request = ++_trackingRequest;
+        var period = enabled ? (_trackingPeriodMs() >= 40 ? 200UL : 100UL) : 0UL;
+        var lease = enabled ? 1500UL : 0UL;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(300);
+        try
+        {
+            _motorAttempted = true;
+            await WriteWireAsync(TCodeBufferedProtocol.Encode([13, request, Boot, Session, period, lease]), timeout.Token).ConfigureAwait(false);
+            ulong[] reply;
+            do { reply = await _trackingReplies.Reader.ReadAsync(timeout.Token).ConfigureAwait(false); } while (reply[1] != request);
+            if (reply.Length != 10 || reply[0] != 107 || reply[2] != Boot || reply[4] != 0 ||
+                reply[6] != 1 || reply[7] != period || reply[8] != lease || reply[9] != 1)
+            {
+                _motorUnsupported = true;
+                _tracking.SetMotorAvailability("固件未支持电机状态扩展；动作和原跟随监测继续");
+                TestRecording.Record("motor_health_subscription", new { supported = false, reply });
+            }
+            else if (!enabled) _tracking.SetMotorAvailability("电机状态监测已关闭");
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        { _tracking.SetMotorAvailability("电机状态订阅超时；不停止动作"); }
     }
 
     public async ValueTask DisposeAsync()
@@ -412,6 +450,12 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             using var cleanup = new CancellationTokenSource(100);
             try { await WriteWireAsync(TCodeBufferedProtocol.Encode([12, ++_trackingRequest, Boot, Session, 0, 0]), cleanup.Token).ConfigureAwait(false); }
             catch { /* The 1.5 s device-side lease is the disconnect fallback. */ }
+        }
+        if (_motorAttempted && !_motorUnsupported)
+        {
+            using var cleanup = new CancellationTokenSource(100);
+            try { await WriteWireAsync(TCodeBufferedProtocol.Encode([13, ++_trackingRequest, Boot, Session, 0, 0]), cleanup.Token).ConfigureAwait(false); }
+            catch { /* bounded lease expires on device */ }
         }
         _receiveCancellation.Cancel();
         try { await _receiver.ConfigureAwait(false); }

@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../MultiFunPlayer/OutputTarget/Tracking/*.cs" Link="Production/Tracking/%(Filename)%(Extension)" />
+    <None Update="TestData/motor-health.frame" CopyToOutputDirectory="PreserveNewest" />
     <None Update="TestData/tracking-cad.frames" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="xunit" Version="2.5.3" />

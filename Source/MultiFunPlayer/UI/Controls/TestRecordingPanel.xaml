@@ -1,0 +1,50 @@
+<UserControl x:Class="MultiFunPlayer.UI.Controls.TestRecordingPanel"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:MultiFunPlayer.UI.Controls" x:ClassModifier="internal">
+ <StackPanel Margin="0,3,0,10">
+  <WrapPanel>
+   <Button x:Name="StartButton" Content="开始记录" Click="StartClick" Margin="0,0,6,2"/>
+   <Button x:Name="StopButton" Content="停止并保存" Click="StopClick" Margin="0,0,6,2"/>
+   <TextBlock x:Name="MarkCount" Text="0 条标注" VerticalAlignment="Center"/>
+  </WrapPanel>
+  <TextBlock x:Name="LastNote" Text="1震动不适 · 2机械感 · 3异响 · 4抖动 · 5跟不上 · 6正常" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+  <TextBlock x:Name="ShortcutStatus" FontSize="11" Text="请先开始记录" TextTrimming="CharacterEllipsis"/>
+  <Expander Header="手动标注 / 记录设置" IsExpanded="False">
+   <StackPanel Margin="8,2">
+    <TextBlock x:Name="StatusText" Text="未记录" TextWrapping="Wrap"/>
+    <WrapPanel>
+     <Button Content="臀模震动不适" Click="MarkClick" Margin="0,2,4,2"/>
+     <Button Content="机械感重" Click="MarkClick" Margin="0,2,4,2"/>
+     <Button Content="异响" Click="MarkClick" Margin="0,2,4,2"/>
+     <Button Content="抖动" Click="MarkClick" Margin="0,2,4,2"/>
+     <Button Content="跟不上" Click="MarkClick" Margin="0,2,4,2"/>
+     <Button Content="正常" Click="MarkClick" Margin="0,2,4,2"/>
+    </WrapPanel>
+    <CheckBox x:Name="ShortcutEnabled" IsChecked="True" Content="数字键标注：MFP / MPV 前台生效"/>
+    <CheckBox x:Name="MarkSound" IsChecked="True" Content="标注成功提示音"/>
+    <DockPanel><Button DockPanel.Dock="Right" Content="添加标注" Click="MarkClick"/><TextBox x:Name="NoteBox" ToolTip="标注备注；输入时数字键不标注"/></DockPanel>
+    <Button Content="打开日志目录" Click="OpenClick" HorizontalAlignment="Left"/>
+   </StackPanel>
+  </Expander>
+  <Expander x:Name="MarkListExpander" Header="历史记录 / 标注列表" IsExpanded="False">
+   <StackPanel Margin="8,2">
+    <TextBlock x:Name="AnnotationFolder" TextWrapping="Wrap"/>
+    <WrapPanel><Button Content="刷新本次标注" Click="RefreshMarksClick" Margin="0,0,4,2"/><Button Content="打开历史记录…" Click="OpenMarksClick" Margin="0,0,4,2"/><Button x:Name="DeleteMarkButton" Content="删除所选标注" Click="DeleteMarkClick" IsEnabled="False"/></WrapPanel>
+    <ListBox x:Name="AnnotationList" DisplayMemberPath="Display" MaxHeight="150" SelectionChanged="AnnotationSelectionChanged"/>
+   </StackPanel>
+  </Expander>
+  <Grid Margin="0,3,0,0">
+   <StackPanel>
+    <local:MarkersPreview Height="18" Bookmarks="{Binding AxisBookmarks}" Chapters="{Binding AxisChapters}" Position="{Binding MediaPosition}" Duration="{Binding MediaDuration}" SeekRequest="TimelineSeek"/>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="140">
+     <Canvas x:Name="AnnotationTimeline" Height="30" Background="#117F9CA8" SizeChanged="TimelineSizeChanged"/>
+    </ScrollViewer>
+   </StackPanel>
+  </Grid>
+  <DockPanel x:Name="SelectedMarkPanel" Visibility="Collapsed" Margin="0,3">
+   <Button DockPanel.Dock="Right" Content="删除此标注" Click="DeleteSelectedTimeline"/>
+   <TextBlock x:Name="SelectedMarkText" TextWrapping="Wrap" VerticalAlignment="Center"/>
+  </DockPanel>
+ </StackPanel>
+</UserControl>

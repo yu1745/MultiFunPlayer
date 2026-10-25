@@ -306,15 +306,15 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             var now = client.Now;
             var expected = source.Position + ((double)now - epoch) / 1000000 * source.Speed;
             var drift = current.Position - expected;
-            var failed = !double.IsFinite(current.Position) || Math.Abs(drift) > .150;
+            var failed = !double.IsFinite(current.Position) || Math.Abs(drift) > .200;
             if (failed || now >= nextClockSample)
             {
                 var direction = !double.IsFinite(drift) ? "invalid" : drift >= 0 ? "media-ahead" : "media-behind";
-                diagnostic?.Invoke(FormattableString.Invariant($"CLOCK {(failed ? "ERROR" : "SAMPLE")} prep={preparation} phase={phase} actualSeconds={current.Position:F6} expectedSeconds={expected:F6} driftMs={drift * 1000:+0.000;-0.000;0.000} direction={direction} thresholdMs=150 sourceSeconds={source.Position:F6} speed={source.Speed:F6} currentSpeed={current.Speed:F6} playing={current.IsPlaying} deviceNowUs={now} mediaEpochUs={epoch} elapsedMs={(TCodeBufferedClient.HostMicroseconds - preparationStarted) / 1000d:F3} uncertaintyMs={client.UncertaintyMilliseconds:F3} boot={client.Boot} session={client.Session} timelineRevision={current.Revision} controlRevision={controlRevision()} status=[{string.Join(',', client.Status)}]"));
+                diagnostic?.Invoke(FormattableString.Invariant($"CLOCK {(failed ? "ERROR" : "SAMPLE")} prep={preparation} phase={phase} actualSeconds={current.Position:F6} expectedSeconds={expected:F6} driftMs={drift * 1000:+0.000;-0.000;0.000} direction={direction} thresholdMs=200 sourceSeconds={source.Position:F6} speed={source.Speed:F6} currentSpeed={current.Speed:F6} playing={current.IsPlaying} hostNowUs={TCodeBufferedClient.HostMicroseconds} deviceNowUs={now} mediaEpochUs={epoch} elapsedMs={(TCodeBufferedClient.HostMicroseconds - preparationStarted) / 1000d:F3} uncertaintyMs={client.UncertaintyMilliseconds:F3} boot={client.Boot} session={client.Session} timelineRevision={current.Revision} controlRevision={controlRevision()} status=[{string.Join(',', client.Status)}]"));
                 nextClockSample = now + 1000000;
             }
             if (failed)
-                throw new IOException(FormattableString.Invariant($"Media clock diverged from P4 by over 150 ms; buffered playback stopped. Actual={current.Position:F6}s expected={expected:F6}s drift={drift * 1000:+0.000;-0.000;0.000}ms phase={phase}."));
+                throw new IOException(FormattableString.Invariant($"Media clock diverged from P4 by over 200 ms; buffered playback stopped. Actual={current.Position:F6}s expected={expected:F6}s drift={drift * 1000:+0.000;-0.000;0.000}ms phase={phase}."));
         }
 
         async Task StopAsync()

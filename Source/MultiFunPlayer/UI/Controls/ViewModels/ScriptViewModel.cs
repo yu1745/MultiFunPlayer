@@ -47,6 +47,15 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         double Rate, double Scale, KeyframeCollection Result)> _motionFilterCache = [];
     [JsonProperty] public MotionFilterSettings MotionFilter { get; private set; } = new();
 
+    public string TestRecordingSettings() => JsonConvert.SerializeObject(new
+    {
+        mediaPath = MediaResource?.Path, PlaybackSpeed, GlobalOffset, MotionFilter,
+        axes = AxisModels.Select(pair => new { axis = pair.Key.Name,
+            source = pair.Value.Script?.Source, name = pair.Value.Script?.Name,
+            path = pair.Value.Script == null ? null : Path.Combine(pair.Value.Script.Source ?? "", pair.Value.Script.Name ?? ""),
+            settings = pair.Value.Settings })
+    });
+
     public MotionFilterSettings GetMotionFilterSettings() => MotionFilter;
 
     public void ApplyMotionFilterSettings(MotionFilterSettings settings)
@@ -58,6 +67,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
             _motionFilterCache.Clear();
         }
         Interlocked.Increment(ref _bufferedTimelineRevision);
+        MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("filter_applied", new { MediaPosition, settings });
     }
 
     private KeyframeCollection GetMotionKeyframes(DeviceAxis axis)
@@ -141,8 +151,15 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         AxisChapters = AxisModels.CreateView(model => model.Script?.Chapters, "Script");
         AxisBookmarks = AxisModels.CreateView(model => model.Script?.Bookmarks, "Script");
 
-        foreach (var (_, settings) in AxisSettings)
+        foreach (var (axis, settings) in AxisSettings)
+        {
             settings.PropertyChanged += OnAxisSettingsPropertyChanged;
+            settings.PropertyChanged += (_, e) => {
+                if (MultiFunPlayer.OutputTarget.Tracking.TestRecording.Active)
+                    MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("script_setting_changed", new {
+                        axis = axis.Name, MediaPosition, property = e.PropertyName, settingsJson = JsonConvert.SerializeObject(settings) });
+            };
+        }
 
         _cancellationSource = new CancellationTokenSource();
         _updateThread = new Thread(() => UpdateThread(_cancellationSource.Token)) { IsBackground = true };
@@ -979,6 +996,9 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         else
             Logger.Debug("Reset {0} script", axis);
 
+        MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("script_changed", new {
+            axis = axis.Name, MediaPosition, name = script?.Name, source = script?.Source,
+            path = script == null ? null : Path.Combine(script.Source ?? "", script.Name ?? "") });
         _eventAggregator.Publish(new ScriptChangedMessage(axis, script));
 
         UpdateLinkedScriptsTo(axis);

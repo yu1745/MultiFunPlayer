@@ -35,7 +35,7 @@
     </StackPanel>
    </DockPanel>
    <TextBlock Text="{Binding Health}" Foreground="#A8BAD2" FontSize="11" Margin="0 10 0 0" TextWrapping="Wrap"/>
-   <TextBlock Text="比较 P4 规划后的杆尖目标与编码器重建姿态。前六台电机协同解算五个并联轴，R0 使用独立编码器。" Foreground="#94A3B8" Margin="0 12 0 12" TextWrapping="Wrap"/>
+
    <DockPanel Margin="0 0 0 10">
     <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
      <TextBlock Text="动作轴" VerticalAlignment="Center" Margin="0 0 8 0"/>
@@ -76,19 +76,23 @@
      <DataGridTextColumn Header="数据／估计状态" Binding="{Binding State}" Width="*"/>
     </DataGrid.Columns>
    </DataGrid>
-   <TextBlock Text="{Binding Quality}" Foreground="#A8BAD2" FontSize="11" TextWrapping="Wrap" Margin="0 12 0 10"/>
-   <Expander Header="电机诊断 · CAD 关节角（°），R0 独立" Foreground="#C5D3E6" Margin="0 0 0 12">
-    <DataGrid ItemsSource="{Binding Motors}" Height="240" Margin="0 8 0 0">
-     <DataGrid.Columns>
-      <DataGridTextColumn Header="电机" Binding="{Binding Motor}" Width="*"/>
-      <DataGridTextColumn Header="最终指令" Binding="{Binding Command}" Width="*"/>
-      <DataGridTextColumn Header="反馈" Binding="{Binding Actual}" Width="*"/>
-      <DataGridTextColumn Header="同时刻误差" Binding="{Binding Error}" Width="*"/>
-      <DataGridTextColumn Header="反馈年龄" Binding="{Binding Age}" Width="*"/>
-     </DataGrid.Columns>
-    </DataGrid>
-   </Expander>
-   <TextBlock Text="RMS / P95 保留真实滞后误差；幅度与转折超调使用延迟／主周期相位对齐。主频相位只对稳定周期显示。— 表示条件不足，鼠标悬停查看原因。姿态为 CAD 估计，不能测出全部弹性、间隙或附件变形。" Foreground="#7F95B2" FontSize="11" TextWrapping="Wrap"/>
+   <TextBlock Text="电机实时状态" FontSize="14" FontWeight="SemiBold" Margin="0 14 0 6"/>
+   <TextBlock Text="{Binding MotorStatus}" FontSize="11" Foreground="#A8BAD2" TextWrapping="Wrap"/>
+   <DataGrid ItemsSource="{Binding Motors}" Height="240" Margin="0 8 0 8">
+    <DataGrid.Columns>
+     <DataGridTextColumn Header="电机" Binding="{Binding Motor}" Width="48"/>
+     <DataGridTextColumn Header="目标 °" Binding="{Binding Command}" Width="75"/>
+     <DataGridTextColumn Header="反馈 °" Binding="{Binding Actual}" Width="75"/>
+     <DataGridTextColumn Header="误差 °" Binding="{Binding Error}" Width="70"/>
+     <DataGridTextColumn Header="速度 °/s" Binding="{Binding Speed}" Width="88"/>
+     <DataGridTextColumn Header="Iq A" Binding="{Binding Current}" Width="70"/>
+     <DataGridTextColumn Header="驱动 ℃" Binding="{Binding FetTemperature}" Width="75"/>
+     <DataGridTextColumn Header="电机 ℃" Binding="{Binding MotorTemperature}" Width="75"/>
+     <DataGridTextColumn Header="电压 V" Binding="{Binding Voltage}" Width="75"/>
+     <DataGridTextColumn Header="状态／故障" Binding="{Binding State}" Width="*"/>
+    </DataGrid.Columns>
+   </DataGrid>
+   <TextBlock Text="Iq 为转矩电流；速度方向按驱动器坐标。温度、电压低频只读采集，未安装或未回传的传感器显示 —。姿态为编码器与 CAD 估计，不能测出结构间隙和弹性变形。" FontSize="11" Foreground="#94A3B8" TextWrapping="Wrap"/>
   </StackPanel>
  </ScrollViewer>
 </Window>

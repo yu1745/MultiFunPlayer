@@ -17,6 +17,24 @@ internal sealed class TrackingMonitor : IDisposable
     private string availability = "请连接串口并使用 Buffered Update";
     private int disposed;
     public static double HostSeconds => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+    private readonly MotorPowerObservation powerObservation = new();
+    private MotorHealthSnapshot motorHealth;
+    private string motorAvailability = "等待电机状态订阅";
+    public MotorHealthSnapshot MotorHealth => Volatile.Read(ref motorHealth);
+    public string MotorAvailability => Volatile.Read(ref motorAvailability);
+    public void SetMotorAvailability(string value) => Volatile.Write(ref motorAvailability, value);
+    public void AcceptMotor(MotorHealthPacket packet, double deviceNowUs)
+    {
+        var previous = MotorHealth;
+        if (previous != null && previous.Packet.Boot == packet.Boot &&
+            (unchecked((int)(packet.Sequence - previous.Packet.Sequence)) <= 0 || packet.TimeMicroseconds <= previous.Packet.TimeMicroseconds))
+        { TestRecording.Record("motor_health_reordered", new { packet.Sequence }); return; }
+        var deliveryAgeMs = Math.Max(0, (deviceNowUs - packet.TimeMicroseconds) / 1000);
+        powerObservation.Observe(packet, HostSeconds, DateTimeOffset.UtcNow, deliveryAgeMs);
+        TestRecording.Record("motor_health", new { packet, deliveryAgeMs, speedUnit = "rad/s", currentUnit = "Iq A", temperatureUnit = "C", voltageUnit = "V" });
+        Volatile.Write(ref motorHealth, new MotorHealthSnapshot(packet, HostSeconds, deliveryAgeMs));
+        SetMotorAvailability(null);
+    }
     public TrackingSnapshot Snapshot => Volatile.Read(ref snapshot);
     public string Availability => Volatile.Read(ref availability);
     public bool IsLive
@@ -30,20 +48,21 @@ internal sealed class TrackingMonitor : IDisposable
         }
     }
     public TrackingMonitor() => worker = Task.Run(RunAsync);
-    public void BeginConnection() { queue.Writer.TryWrite(new(Reset: true)); SetAvailability("正在订阅实时跟随数据…"); }
+    public void BeginConnection() { powerObservation.Reset(); Volatile.Write(ref motorHealth, null); SetMotorAvailability("等待电机状态订阅"); queue.Writer.TryWrite(new(Reset: true)); SetAvailability("正在订阅实时跟随数据…"); }
     public void SetAvailability(string reason) => Volatile.Write(ref availability, reason);
     public void Accept(TrackingPacket packet, double? deviceNowUs = null, double? clockUncertaintyMs = null)
     {
+        TestRecording.Record("tracking", new { packet, deviceNowUs, clockUncertaintyMs });
         queue.Writer.TryWrite(new(packet, HostSeconds, DeliveryAgeMs: deviceNowUs.HasValue ?
             Math.Max(0, (deviceNowUs.Value - packet.TimeMicroseconds) / 1000) : null, ClockUncertaintyMs: clockUncertaintyMs));
         SetAvailability(null);
     }
-    public void BadPacket(string reason) { queue.Writer.TryWrite(new(Corrupt: true)); }
+    public void BadPacket(string reason) { TestRecording.Record("tracking_bad_packet", new { reason }); queue.Writer.TryWrite(new(Corrupt: true)); }
     public void SetWindow(double seconds) => queue.Writer.TryWrite(new(Window: Math.Clamp(seconds, 2, 12)));
     public void Reset() => queue.Writer.TryWrite(new(Reset: true));
     private async Task RunAsync()
     {
-        var analysis = new TrackingAnalysis(); var lastPublish = 0d;
+        var analysis = new TrackingAnalysis(); var lastPublish = 0d; var lastPowerLog = 0d;
         try
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
@@ -59,6 +78,7 @@ internal sealed class TrackingMonitor : IDisposable
                     if (message.Packet != null) analysis.Add(message.Packet, message.HostSeconds, message.DeliveryAgeMs, message.ClockUncertaintyMs);
                 }
                 var now = HostSeconds;
+                if (now - lastPowerLog >= 1) { TestRecording.Record("motor_power_observation", powerObservation.Snapshot(now)); lastPowerLog = now; }
                 if (changed && (now - lastPublish >= .1 || force))
                 { Volatile.Write(ref snapshot, analysis.Snapshot()); lastPublish = now; }
             }
@@ -75,3 +95,4 @@ internal sealed class TrackingMonitor : IDisposable
         _ = worker.ContinueWith(_ => cancellation.Dispose(), TaskScheduler.Default);
     }
 }
+
