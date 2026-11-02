@@ -6,6 +6,12 @@ namespace MultiFunPlayer.UI.Tracking;
 
 internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyChangedBase
 {
+    public string LoadStatus { get; private set; }
+    public string LoadValues { get; private set; }
+    public string[] TestStages { get; } = ["第一阶段：完整机构空载", "第二阶段：刚性配重", "第三阶段：臀模", "阶段待确认"];
+    public int SelectedStage { get; set; } = monitor.TestStage switch { "第二阶段：刚性配重" => 1, "第三阶段：臀模" => 2, "阶段待确认" => 3, _ => 0 };
+    public void OnSelectedStageChanged() { monitor.SetTestStage(TestStages[Math.Clamp(SelectedStage,0,3)]); TestRecording.State("test_stage", new { stage = TestStages[Math.Clamp(SelectedStage,0,3)], source = "user_confirmed", inferred = false }); }
+    public void CaptureBaseline() => monitor.CaptureLoadBaseline();
     public string[] AxisNames { get; } = TrackingSnapshot.Names;
     public double[] Windows { get; } = [2, 4, 8, 12];
     public int SelectedAxis { get; set; }
@@ -26,6 +32,11 @@ internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyCha
     public void Reset() => monitor.Reset();
     public void UpdateSnapshot()
     {
+        OnSelectedStageChanged();
+        var estimate = monitor.Load;
+        var loadLive = monitor.IsLive && monitor.MotorHealth is { ElapsedMs: < 750 };
+        LoadStatus = loadLive ? $"{estimate.State} · 基线姿态 {estimate.BaselineCount} · 采集 {estimate.CaptureCount}/15" : "回传不可用，载荷估计暂停";
+        LoadValues = loadLive && estimate.ResidualA != null ? string.Join("   ", estimate.ResidualA.Select((x,i) => $"M{i+1}: {x:+0.00;-0.00;0.00} A")) : "—";
         var snapshot = monitor.Snapshot;
         var live = monitor.IsLive;
         var age = snapshot.Quality.LastPacketHostSeconds > 0 ? (TrackingMonitor.HostSeconds - snapshot.Quality.LastPacketHostSeconds) * 1000 : double.NaN;

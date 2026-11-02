@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading.Channels;
@@ -23,6 +23,9 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private readonly TrackingMonitor _tracking;
     private readonly Func<bool> _trackingEnabled;
     private readonly Func<int> _trackingPeriodMs;
+    private HighFrequencyCapture _highFrequency;
+    public void StartHighFrequency(Func<bool> paused) => _highFrequency ??= new HighFrequencyCapture(
+        WriteWireAsync, () => paused() && !MayOwnMotion, () => Boot, _diagnostic, enabled: () => TestRecording.HighFrequencyEnabled);
     private readonly SemaphoreSlim _writeGate = new(1, 1);
     private readonly Channel<ulong[]> _trackingReplies = Channel.CreateBounded<ulong[]>(4);
     private readonly CancellationTokenSource _trackingCancellation = new();
@@ -78,6 +81,9 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     }
                     var line = buffer.ToString();
                     buffer.Clear();
+                    var hfIndex = line.IndexOf("!HF1,", StringComparison.Ordinal);
+                    if (hfIndex >= 0) { _highFrequency?.Receive(line[hfIndex..]); continue; }
+                    if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^\s*DHF \d+ read(?:z)? ")) continue;
                     var motorTelemetry = line.IndexOf(MotorHealthPacket.Prefix, StringComparison.Ordinal);
                     if (motorTelemetry >= 0)
                     {
@@ -167,7 +173,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         var entries = _deviceDiagnostics.Where(d => d.Boot == Boot && d.Session == Session && !d.IsContext).ToArray();
         var fault = entries.LastOrDefault(d => d.State == 5);
         var relevant = fault ?? entries.LastOrDefault();
-        return new IOException(context + $" state={Status?[5]}; underruns={Status?.ElementAtOrDefault(21)}." +
+        return new PlaybackHoldException(context + $" state={Status?[5]}; underruns={Status?.ElementAtOrDefault(21)}." +
             (relevant == null ? " No detailed device diagnostic received." : $" P4 event={relevant.Sequence}: {relevant.Message}"));
     }
 
@@ -324,7 +330,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     public async Task BeginAsync(ulong mask, ulong start, BufferedSessionLimits limits, CancellationToken token)
     {
-        var args = new ulong[] { mask, start, 1 }.Concat(limits.Encode()).ToArray();
+        var args = new ulong[] { mask, start, 3 }.Concat(limits.Encode()).ToArray();
         // Mark BEFORE sending: a lost BEGIN ACK may still mean the device has
         // accepted a new session. Cleanup queries that session before STOP.
         _beginSession = Session;
@@ -366,14 +372,21 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private async Task TrackingPumpAsync(CancellationToken token)
     {
         var active = false;
+        var exportSuppressed = false;
         try
         {
             while (!token.IsCancellationRequested)
             {
-                var enabled = _trackingEnabled();
+                var suppress = _highFrequency?.IsExporting == true;
+                if(suppress != exportSuppressed) {
+                    exportSuppressed=suppress;
+                    TestRecording.Record("telemetry_export_gate",new {suppressed=suppress, reason="paused_high_frequency_export", boot=Boot, session=Session});
+                    _diagnostic?.Invoke(suppress ? "HF export: suspend ordinary telemetry" : "HF export: restore ordinary telemetry subscription");
+                }
+                var enabled = _trackingEnabled() && !suppress;
                 if (!enabled && !active)
                 {
-                    _tracking.SetAvailability("跟随监测已关闭");
+                    _tracking.SetAvailability(exportSuppressed ? "暂停期间正在导出高频记录，普通遥测暂缓" : "跟随监测已关闭");
                     await Task.Delay(250, token).ConfigureAwait(false);
                     continue;
                 }
@@ -402,7 +415,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                         return;
                     }
                     active = enabled;
-                    if (!active) _tracking.SetAvailability("跟随监测已关闭");
+                    if (!active) _tracking.SetAvailability(exportSuppressed ? "暂停期间正在导出高频记录，普通遥测暂缓" : "跟随监测已关闭");
                     await RenewMotorHealthAsync(enabled, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
@@ -443,6 +456,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_highFrequency != null) await _highFrequency.DisposeAsync();
         _trackingCancellation.Cancel();
         if (_trackingPump != null) await _trackingPump.ConfigureAwait(false);
         if (_trackingAttempted)

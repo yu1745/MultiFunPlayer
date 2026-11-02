@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using MultiFunPlayer.Common;
 using MultiFunPlayer.Input;
 using MultiFunPlayer.Input.TCode;
@@ -36,7 +36,8 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     protected override TrackingMonitor Tracking => _trackingMonitor;
     protected override bool TrackingRequested => TrackingEnabled;
     // Leave ACK headroom even if a UART user keeps the old 115200 setting.
-    protected override int TrackingPeriodMs => BaudRate <= 115200 ? 50 : BaudRate <= 230400 ? 40 : 20;
+    // Raising UART throughput must not raise motor health query load.
+    protected override int TrackingPeriodMs => 50;
     public void OpenTracking()
     {
         if (_trackingWindow != null) { _trackingWindow.Activate(); return; }
@@ -48,20 +49,33 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     public bool IsFilterOpen { get; private set; }
     public bool CanOpenFilter => !IsFilterOpen && !IsPresetOpen && !IsManualOpen;
 
-    public async Task OpenFilter()
+    private System.Windows.Window _filterWindow;
+    public void OpenFilter()
     {
+        if (_filterWindow != null) { _filterWindow.Activate(); return; }
         if (!CanOpenFilter) return;
-        IsFilterOpen = true;
-        try
-        {
-            EventAggregator.Publish(new MediaPlayPauseMessage(false));
-            await DialogHelper.ShowAsync(new MotionFilterDialog(_filterProvider), "RootDialog").ConfigureAwait(true);
-        }
-        finally
-        {
-            EventAggregator.Publish(new MediaPlayPauseMessage(false));
-            IsFilterOpen = false;
-        }
+        var model = new MotionFilterDialog(_filterProvider);
+        var window = DialogHelper.CreateFloatingWindow(model, "实时脚本波形 · MultiFunPlayer");
+        _filterWindow = window; IsFilterOpen = true;
+        model.SeekRequested += position => EventAggregator.Publish(new MediaSeekMessage(TimeSpan.FromSeconds(position)));
+        model.CloseRequested += window.Close;
+        window.Closed += (_, _) => { model.CloseRequested -= window.Close; _filterWindow = null; IsFilterOpen = false; };
+        window.PreviewKeyDown += (_, e) => {
+            if (e.Key != System.Windows.Input.Key.Left && e.Key != System.Windows.Input.Key.Right) return;
+            if (System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase) return;
+            var mods = System.Windows.Input.Keyboard.Modifiers;
+            if (mods.HasFlag(System.Windows.Input.ModifierKeys.Alt)) return;
+            e.Handled = true;
+            if(e.IsRepeat) return;
+            var snapshot = _filterProvider.GetBufferedPlaybackSnapshot(false);
+            if(!double.IsFinite(snapshot.Position)) return;
+            var step = mods.HasFlag(System.Windows.Input.ModifierKeys.Shift) ? .001 : mods.HasFlag(System.Windows.Input.ModifierKeys.Control) ? .100 : .010;
+            var position = Math.Max(0, snapshot.Position + (e.Key == System.Windows.Input.Key.Left ? -step : step));
+            if(_filterProvider is MultiFunPlayer.UI.Controls.ViewModels.ScriptViewModel script && double.IsFinite(script.MediaDuration))
+                position = Math.Min(position, Math.Max(0,script.MediaDuration));
+            EventAggregator.Publish(new MediaSeekMessage(TimeSpan.FromSeconds(position)));
+        };
+        try { window.Show(); } catch { _filterWindow=null; IsFilterOpen=false; throw; }
     }
     public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen;
 

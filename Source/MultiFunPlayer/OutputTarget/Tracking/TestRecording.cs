@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -25,11 +25,14 @@ internal static class TestRecording
     private static long lastTelemetry;
     private static readonly JsonSerializerOptions Options = new()
     { NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
+    public static volatile bool HighFrequencyEnabled; // Off on every application launch.
+    public static volatile bool HighFrequencyBusy;
     public static bool Active => Volatile.Read(ref current) != null;
     public static string DirectoryPath { get; private set; }
+    public static string HighFrequencyStatus { get; set; } = "";
     public static string Status
     {
-        get { var s = Volatile.Read(ref current); return error ?? (s != null ? $"记录中 · 日志丢弃 {Interlocked.Read(ref s.Dropped)} 条 · " + ((Stopwatch.GetTimestamp() - Interlocked.Read(ref lastTelemetry)) / (double)Stopwatch.Frequency < 1 ? "已收到电机反馈" : "等待电机反馈（检查 Buffered Update 和跟随监测）") : "已停止 / 未记录"); }
+        get { var s = Volatile.Read(ref current); return (error ?? (s != null ? $"记录中 · 日志丢弃 {Interlocked.Read(ref s.Dropped)} 条 · " + ((Stopwatch.GetTimestamp() - Interlocked.Read(ref lastTelemetry)) / (double)Stopwatch.Frequency < 1 ? "已收到电机反馈" : "等待电机反馈（检查 Buffered Update 和跟随监测）") : "已停止 / 未记录")) + (string.IsNullOrEmpty(HighFrequencyStatus) ? "" : " · " + HighFrequencyStatus); }
     }
     public static void State(string key, object data)
     {
@@ -65,8 +68,11 @@ internal static class TestRecording
     public static string Annotate(string label, string note, double mediaSeconds, bool isPlaying, string settings)
     {
         var id = Guid.NewGuid().ToString("N");
+        FilterUsageLog.Write("manual_annotation",new{annotationId=id,label,note,mediaSeconds,isPlaying,settings});
         Record("annotation", new { annotationId = id, label, note, mediaSeconds, paused = !isPlaying,
             MediaPosition = mediaSeconds, IsPlaying = isPlaying, settings });
+        try { AnnotationOverlay.Add(DirectoryPath, AnnotationStore.Create(id, mediaSeconds, label, note, settings)); }
+        catch (JsonException) { /* Display indexing must never break raw annotation recording. */ }
         return id;
     }
     public static void Record(string kind, object data)
@@ -124,3 +130,4 @@ internal static class TestRecording
         }
     }
 }
+

@@ -1,4 +1,4 @@
-<UserControl x:Class="MultiFunPlayer.OutputTarget.Views.SerialOutputTarget"
+﻿<UserControl x:Class="MultiFunPlayer.OutputTarget.Views.SerialOutputTarget"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:converters="clr-namespace:MultiFunPlayer.UI.Converters"
@@ -9,6 +9,7 @@
              xmlns:ports="clr-namespace:System.IO.Ports;assembly=System"
              xmlns:s="https://github.com/canton7/Stylet"
              xmlns:ui="clr-namespace:MultiFunPlayer.UI"
+             xmlns:tracking="clr-namespace:MultiFunPlayer.OutputTarget.Tracking"
              d:DesignHeight="450"
              d:DesignWidth="800"
              x:ClassModifier="internal"
@@ -85,6 +86,10 @@
                     <material:PackIcon Kind="Tune" Width="20" Height="20"/>
                 </Button>
 
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center" Margin="5 0 8 0" DataContext="{x:Static tracking:FilterRuntime.Instance}">
+                    <Ellipse Width="9" Height="9" Fill="{Binding Color}" Margin="0 0 5 0"/>
+                    <TextBlock Text="{Binding Text}" VerticalAlignment="Center" FontSize="11"/>
+                </StackPanel>
                 <Button DockPanel.Dock="Left" Command="{s:Action OpenFilter}"
                         IsEnabled="{Binding CanOpenFilter}" ToolTip="六轴脚本滤波器 · 预览并平滑快速反向动作"
                         Padding="0" Style="{StaticResource MaterialDesignProgressToolBarButton}">

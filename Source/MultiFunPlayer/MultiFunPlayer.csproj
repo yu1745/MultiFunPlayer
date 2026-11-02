@@ -57,4 +57,5 @@
     <PackageReference Include="System.Management" Version="9.*" />
     <PackageReference Include="Vortice.XInput" Version="3.*" />
   </ItemGroup>
+<ItemGroup><Content Include="MotionPlanner/*.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
 </Project>

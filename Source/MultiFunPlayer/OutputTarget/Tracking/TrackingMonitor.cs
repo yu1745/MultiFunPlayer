@@ -8,7 +8,7 @@ namespace MultiFunPlayer.OutputTarget.Tracking;
 internal sealed class TrackingMonitor : IDisposable
 {
     private sealed record Message(TrackingPacket Packet = null, double HostSeconds = 0, bool Corrupt = false,
-        bool Reset = false, double? Window = null, double? DeliveryAgeMs = null, double? ClockUncertaintyMs = null);
+        bool Reset = false, double? Window = null, double? DeliveryAgeMs = null, double? ClockUncertaintyMs = null, MotorHealthPacket HealthPacket = null, bool CaptureBaseline = false);
     private readonly Channel<Message> queue = Channel.CreateBounded<Message>(new BoundedChannelOptions(128)
     { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.DropOldest });
     private readonly CancellationTokenSource cancellation = new();
@@ -18,6 +18,12 @@ internal sealed class TrackingMonitor : IDisposable
     private int disposed;
     public static double HostSeconds => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
     private readonly MotorPowerObservation powerObservation = new();
+    private ResidualLoadObserver.Result load = new("等待空载基线");
+    private string testStage = "第一阶段：完整机构空载";
+    public string TestStage => Volatile.Read(ref testStage);
+    public void SetTestStage(string value) => Volatile.Write(ref testStage, value);
+    public ResidualLoadObserver.Result Load => Volatile.Read(ref load);
+    public void CaptureLoadBaseline() => queue.Writer.TryWrite(new(CaptureBaseline: true));
     private MotorHealthSnapshot motorHealth;
     private string motorAvailability = "等待电机状态订阅";
     public MotorHealthSnapshot MotorHealth => Volatile.Read(ref motorHealth);
@@ -31,6 +37,7 @@ internal sealed class TrackingMonitor : IDisposable
         { TestRecording.Record("motor_health_reordered", new { packet.Sequence }); return; }
         var deliveryAgeMs = Math.Max(0, (deviceNowUs - packet.TimeMicroseconds) / 1000);
         powerObservation.Observe(packet, HostSeconds, DateTimeOffset.UtcNow, deliveryAgeMs);
+        queue.Writer.TryWrite(new(HealthPacket: packet, DeliveryAgeMs: deliveryAgeMs));
         TestRecording.Record("motor_health", new { packet, deliveryAgeMs, speedUnit = "rad/s", currentUnit = "Iq A", temperatureUnit = "C", voltageUnit = "V" });
         Volatile.Write(ref motorHealth, new MotorHealthSnapshot(packet, HostSeconds, deliveryAgeMs));
         SetMotorAvailability(null);
@@ -62,6 +69,7 @@ internal sealed class TrackingMonitor : IDisposable
     public void Reset() => queue.Writer.TryWrite(new(Reset: true));
     private async Task RunAsync()
     {
+        var observer = new ResidualLoadObserver();
         var analysis = new TrackingAnalysis(); var lastPublish = 0d; var lastPowerLog = 0d;
         try
         {
@@ -72,10 +80,18 @@ internal sealed class TrackingMonitor : IDisposable
                 while (queue.Reader.TryRead(out var message))
                 {
                     changed = true;
-                    if (message.Reset) { analysis.Reset(); force = true; }
+                    if (message.Reset) { analysis.Reset(); observer.Reset(); Volatile.Write(ref load, observer.Latest); force = true; }
+                    if (message.CaptureBaseline) observer.BeginBaseline();
                     if (message.Window.HasValue) { analysis.WindowSeconds = message.Window.Value; force = true; }
                     if (message.Corrupt) analysis.Corrupt();
-                    if (message.Packet != null) analysis.Add(message.Packet, message.HostSeconds, message.DeliveryAgeMs, message.ClockUncertaintyMs);
+                    if (message.Packet != null) { observer.AddPose(message.Packet); analysis.Add(message.Packet, message.HostSeconds, message.DeliveryAgeMs, message.ClockUncertaintyMs); }
+                    if (message.HealthPacket != null)
+                    {
+                        var result = observer.Observe(message.HealthPacket, message.DeliveryAgeMs ?? 0);
+                        Volatile.Write(ref load, result);
+                        TestRecording.Record("residual_load", new { message.HealthPacket.Boot, message.HealthPacket.TimeMicroseconds, result,
+                            stage = Volatile.Read(ref testStage), stageSource = "user_confirmed", estimator = "static_session_current_residual_v1", massKg = (double?)null, forceN = (double?)null });
+                    }
                 }
                 var now = HostSeconds;
                 if (now - lastPowerLog >= 1) { TestRecording.Record("motor_power_observation", powerObservation.Snapshot(now)); lastPowerLog = now; }

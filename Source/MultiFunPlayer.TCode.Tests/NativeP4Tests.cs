@@ -179,7 +179,7 @@ public class NativeP4Tests
         Assert.Contains(rows, row => row[3] == 4 && row[4] == 63);
         var begin = firmware.Requests.Single(fields => fields[0] == 1);
         Assert.Equal(13, begin.Length);
-        Assert.Equal(1UL, begin[6]); // septic profile
+        Assert.Equal(3UL, begin[6]); // continuous reversal profile
         Assert.All(begin.Skip(7), value => Assert.InRange(value, 1UL, 100000000000UL));
         for (var axis = 0; axis < 6; axis++)
         {

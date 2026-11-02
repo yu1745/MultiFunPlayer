@@ -76,6 +76,18 @@
      <DataGridTextColumn Header="数据／估计状态" Binding="{Binding State}" Width="*"/>
     </DataGrid.Columns>
    </DataGrid>
+   <Border Background="#1A263A" Padding="12" Margin="0 12 0 6" CornerRadius="6">
+    <StackPanel>
+     <TextBlock Text="剩余载荷检测（静态电流残差）" FontWeight="SemiBold"/>
+     <TextBlock Text="{Binding LoadStatus}" Foreground="#67E8F9" TextWrapping="Wrap" Margin="0 6"/>
+     <TextBlock Text="{Binding LoadValues}" TextWrapping="Wrap"/>
+     <StackPanel Orientation="Horizontal" Margin="0 8">
+      <ComboBox Width="230" ItemsSource="{Binding TestStages}" SelectedIndex="{Binding SelectedStage}"/>
+      <Button Content="采集当前姿态空载基线" Click="LoadBaselineClick" Margin="12 0" Padding="10 5"/>
+     </StackPanel>
+     <TextBlock Text="仅在完整机构无外载且静止时采集，约需数秒；不同姿态可重复采集。重连需重采；更改零位、控制参数或前馈后请重置统计并重采。运行中暂不推算公斤／牛顿，不自动调整前馈。开始测试记录后，残差和阶段写入日志；阶段由人工确认。" FontSize="11" Foreground="#A8BAD2" TextWrapping="Wrap"/>
+    </StackPanel>
+   </Border>
    <TextBlock Text="电机实时状态" FontSize="14" FontWeight="SemiBold" Margin="0 14 0 6"/>
    <TextBlock Text="{Binding MotorStatus}" FontSize="11" Foreground="#A8BAD2" TextWrapping="Wrap"/>
    <DataGrid ItemsSource="{Binding Motors}" Height="240" Margin="0 8 0 8">

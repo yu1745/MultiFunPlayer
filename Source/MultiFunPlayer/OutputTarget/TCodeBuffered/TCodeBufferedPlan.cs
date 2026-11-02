@@ -3,7 +3,7 @@ using System.IO;
 
 namespace MultiFunPlayer.OutputTarget.TCodeBuffered;
 
-internal readonly record struct BufferedNode(int Axis, ulong Microseconds, ulong Position);
+internal readonly record struct BufferedNode(int Axis, ulong Microseconds, ulong Position, long AccelerationMicros = 0);
 
 internal static class TCodeBufferedPlan
 {
@@ -21,6 +21,16 @@ internal static class TCodeBufferedPlan
             throw new InvalidDataException("No loaded output axes are supported by this device.");
         var nodes = Create(snapshot, 0);
         var limits = BufferedSessionLimits.FromScript(nodes, device.Positions);
+        // Establish one envelope before BEGIN from both raw and filtered scripts.
+        // Live strength reductions may restore original motion but never enlarge
+        // the accepted envelope in the middle of a session.
+        if(snapshot.Axes.Any(a=>a.OriginalKeyframes!=null)) {
+            var raw=Create(snapshot with{Axes=snapshot.Axes.Select(a=>a with{Keyframes=a.OriginalKeyframes ?? a.Keyframes}).ToArray()},0);
+            var rawLimits=BufferedSessionLimits.FromScript(raw,device.Positions);
+            BufferedAxisLimits Max(BufferedAxisLimits a,BufferedAxisLimits b)=>new(Math.Max(a.Velocity,b.Velocity),Math.Max(a.Acceleration,b.Acceleration),Math.Max(a.Jerk,b.Jerk));
+            limits=new(Max(limits.Translation,rawLimits.Translation),Max(limits.Rotation,rawLimits.Rotation));
+            limits.Encode();
+        }
 
         // Reposition from the device's queried pose. Long, low-limit positioning
         // is split into feasible <=55 s intervals; media stays paused throughout.
@@ -39,7 +49,7 @@ internal static class TCodeBufferedPlan
             if (nodes[axis].Count == 0) continue;
             var distance = Math.Abs(nodes[axis][0].Position / 10000d - device.Positions[axis]);
             if (distance > 0)
-                segmentSeconds = Math.Max(segmentSeconds, Math.Max(.05,
+                segmentSeconds = Math.Max(segmentSeconds, Math.Max(PositioningMinimumSeconds(distance / steps),
                     limits.ForAxis(axis).RequiredSeconds(distance / steps + .0003)));
         }
         var segmentUs = (ulong)Math.Ceiling(segmentSeconds * 1e6);
@@ -70,6 +80,13 @@ internal static class TCodeBufferedPlan
         return new(nodes, limits, positioning);
     }
 
+    // Repositioning must not inherit an arbitrarily fast script's envelope.
+    // Normalized distance: short corrections ~0.2 s, full-range <=0.9 s
+    // unless the existing, stricter session envelope requires longer.
+    internal static double PositioningMinimumSeconds(double distance) => Math.Max(
+        .12 + .6 * Math.Sqrt(distance), Math.Max(2.1875 * distance / 2.5,
+        Math.Max(Math.Sqrt(7.513189 * distance / 50), Math.Cbrt(52.5 * distance / 300))));
+
     public static List<BufferedNode>[] Create(BufferedPlaybackSnapshot snapshot, ulong epoch)
     {
         if (!double.IsFinite(snapshot.Position) || !double.IsFinite(snapshot.Speed) || snapshot.Speed <= 0)
@@ -87,7 +104,12 @@ internal static class TCodeBufferedPlan
                 || axis.Minimum < 0 || axis.Maximum > 1 || axis.Minimum > axis.Maximum)
                 throw new InvalidDataException($"Invalid {axis.Name} buffered output settings.");
 
-            var turns = TurningPoints(axis.Keyframes);
+            var originalTurns = TurningPoints(axis.Keyframes);
+            var turns = NormalizeSpacing(originalTurns, snapshot.Speed);
+            if (turns.Count != originalTurns.Count)
+                MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("trajectory_dense_points", new {
+                    axis = axis.Name, original = originalTurns.Count, retained = turns.Count,
+                    minimumIntervalMs = 10, speed = snapshot.Speed, sourceUnmodified = true });
             // Split long segments before seeking so the same playback rate has
             // the same curve whether starting at zero or in the middle.
             var points = new List<Keyframe> { turns[0] };
@@ -112,7 +134,12 @@ internal static class TCodeBufferedPlan
             var nodes = result[index];
             var leftValue = Map(left.Value, axis);
             var rightValue = Map(right.Value, axis);
-            var initialValue = leftValue + ((double)rightValue - leftValue) * Smooth(u);
+            var sourceNodes = points.Select(p => new BufferedNode(index,
+                (ulong)Math.Round((p.Position-points[0].Position)/snapshot.Speed*1e6),Map(p.Value,axis))).ToList();
+            BufferedReversalCurve.AssignOptimized(sourceNodes);
+            var initialValue = next>0 && next<sourceNodes.Count
+                ? BufferedReversalCurve.Value(sourceNodes[next-1],sourceNodes[next],u)
+                : leftValue;
             nodes.Add(new(index, epoch, (ulong)Math.Round(initialValue, MidpointRounding.AwayFromZero)));
             for (var i = next; i < points.Count; i++)
             {
@@ -126,11 +153,41 @@ internal static class TCodeBufferedPlan
                     nodes.Add(new(index, nodes[^1].Microseconds + 60000000, nodes[^1].Position));
                 if (us - nodes[^1].Microseconds < 1000)
                     throw new InvalidDataException($"{axis.Name}: trajectory segment shorter than 1 ms; reduce playback speed or seek away from the endpoint.");
-                nodes.Add(new(index, us, Map(points[i].Value, axis)));
+                nodes.Add(new(index, us, Map(points[i].Value, axis), sourceNodes[i].AccelerationMicros));
             }
+            if(u>0 && u<1 && nodes.Count>1)nodes[1]=nodes[1] with{AccelerationMicros=0};
+        }
+        // A seek starts at rest. Make only its interrupted segment and next join
+        // rest-to-rest; preserve the precomputed full-script curve afterwards.
+        foreach(var axisNodes in result) {
+            BufferedReversalCurve.RepairBoundaries(axisNodes);
         }
         if (result.All(x => x.Count == 0))
             throw new InvalidDataException("Buffered Update requires an enabled L0/L1/L2/R0/R1/R2 script.");
+        return result;
+    }
+
+    // Remove unresolvable clustered turns before both seeking and envelope
+    // calculation. Never stretch the media clock or enlarge protocol limits.
+    // 10 ms is two ticks at the 200 Hz executor, not a comfort/safety limit.
+    internal static List<Keyframe> NormalizeSpacing(List<Keyframe> turns, double speed)
+    {
+        if (turns.Count < 2) return turns;
+        var minimum = .010 * speed;
+        var result = new List<Keyframe> { turns[0] };
+        foreach (var point in turns.Skip(1))
+            if (point.Position - result[^1].Position >= minimum - 1e-10)
+                result.Add(point);
+        var last = turns[^1];
+        if (result[^1].Position != last.Position)
+        {
+            // Preserve the source's terminal time/value; discard the nearby
+            // intermediate turn instead of delaying the remainder of the script.
+            if (result.Count > 1) result.RemoveAt(result.Count - 1);
+            if (last.Position - result[^1].Position < minimum - 1e-10)
+                throw new InvalidDataException("Entire trajectory is shorter than the 10 ms output resolution.");
+            result.Add(last);
+        }
         return result;
     }
 
@@ -185,6 +242,14 @@ internal static class TCodeBufferedPlan
             turns.Add(extreme);
         if (turns[^1].Position != points[^1].Position)
             turns.Add(points[^1]);
-        return turns;
+        // A plateau has two timing boundaries. Keeping only its last sample
+        // stretches the preceding stroke across the intended stationary interval.
+        for (var i = 1; i < points.Count; i++)
+        {
+            if (points[i].Value != points[i - 1].Value) continue;
+            if (i == 1 || points[i - 2].Value != points[i].Value) turns.Add(points[i - 1]);
+            if (i == points.Count - 1 || points[i + 1].Value != points[i].Value) turns.Add(points[i]);
+        }
+        return turns.DistinctBy(p => p.Position).OrderBy(p => p.Position).ToList();
     }
 }

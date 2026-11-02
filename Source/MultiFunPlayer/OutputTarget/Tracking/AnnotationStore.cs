@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 namespace MultiFunPlayer.OutputTarget.Tracking;
 
@@ -50,7 +50,7 @@ internal static class AnnotationStore
     {
         var deleted = Deleted(folder); deleted.Add(id);
         var path = DeletionFile(folder); var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try { File.WriteAllText(temporary, JsonSerializer.Serialize(deleted)); File.Move(temporary, path, true); }
+        try { File.WriteAllText(temporary, JsonSerializer.Serialize(deleted)); File.Move(temporary, path, true); AnnotationOverlay.Remove(folder, id); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 }

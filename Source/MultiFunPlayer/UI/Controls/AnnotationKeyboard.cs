@@ -27,8 +27,8 @@ internal sealed class AnnotationKeyboard : IDisposable
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
     }
     internal static string Label(int key) => key switch {
-        0x31 or 0x61 => "臀模震动不适", 0x32 or 0x62 => "机械感重", 0x33 or 0x63 => "异响",
-        0x34 or 0x64 => "抖动", 0x35 or 0x65 => "跟不上", 0x36 or 0x66 => "正常", _ => null };
+        0x31 or 0x61 => "臀模震动不适和异响", 0x32 or 0x62 => "机械感重", 0x33 or 0x63 => "正常",
+        0x34 or 0x64 => "抖动", 0x35 or 0x65 => "跟不上", _ => null };
     private bool Allowed()
     {
         GetWindowThreadProcessId(GetForegroundWindow(),out var pid);
@@ -41,13 +41,13 @@ internal sealed class AnnotationKeyboard : IDisposable
     {
         try {
             if(!Allowed()) { Release(); status="未占用数字键：等待开始记录 / MFP或MPV前台"; return; }
-            for(int i=0;i<12;i++) {
-                var id=100+i; var key=i<6?0x31+i:0x61+i-6;
+            for(int i=0;i<10;i++) {
+                var id=100+i; var key=i<5?0x31+i:0x61+i-5;
                 if(registered.ContainsKey(id)) continue;
                 if(RegisterHotKey(source.Handle,id,0x4000,(uint)key)) registered.Add(id,key);
-                else { status=$"数字键注册失败：键{(i%6)+1}，错误{Marshal.GetLastWin32Error()}"; return; }
+                else { status=$"数字键注册失败：键{(i%5)+1}，错误{Marshal.GetLastWin32Error()}"; return; }
             }
-            status="数字键已接管：1～6 / 小键盘（不会传给MPV）";
+            status="数字键已接管：1～5 / 小键盘（不会传给MPV）";
         } catch(Exception ex) { Release(); status="快捷键异常："+ex.Message; }
     }
     private nint Message(nint hwnd,int msg,nint w,nint l,ref bool handled)

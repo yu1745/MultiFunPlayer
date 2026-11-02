@@ -46,6 +46,15 @@ public class SessionPlanTests
         Assert.Equal(expected.PositioningMicroseconds, filtered.PositioningMicroseconds);
         Assert.Throws<InvalidDataException>(() => TCodeBufferedPlan.CreateSession(source, Pose(), 0));
     }
+    [Fact]
+    public void SeekAcrossLargeDistanceDoesNotInheritDenseScriptSpeed()
+    {
+        var pose=Pose(0);
+        var plan=TCodeBufferedPlan.CreateSession(ProtocolAndPlanTests.Snapshot([new(0,.9),new(.01,0),new(.02,.9)]),pose);
+        Assert.InRange(plan.PositioningMicroseconds,700000UL,1000000UL);
+        Verify(plan,pose);
+    }
+
     private static BufferedDevicePose Pose(double value = .5) => new(Enumerable.Repeat(value, 6).ToArray());
 
     [Fact]

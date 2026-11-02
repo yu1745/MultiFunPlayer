@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -37,6 +37,8 @@ internal partial class TestRecordingPanel : UserControl
     }
     private void Capture()
     {
+        HighFrequencyOption.IsEnabled = !TestRecording.Active && !TestRecording.HighFrequencyBusy;
+        HighFrequencyOption.IsChecked = TestRecording.HighFrequencyEnabled;
         StatusText.Text = TestRecording.Status + (TestRecording.DirectoryPath == null ? "" : " · " + TestRecording.DirectoryPath);
         StartButton.IsEnabled = !TestRecording.Active; StopButton.IsEnabled = TestRecording.Active;
         if (!TestRecording.Active || DataContext is not ScriptViewModel vm)
@@ -67,9 +69,17 @@ internal partial class TestRecordingPanel : UserControl
         }
         TestRecording.Record("playback_cursor", new { vm.MediaPosition, vm.PlaybackSpeed, vm.IsPlaying });
     }
+    private void HighFrequencyClick(object sender, RoutedEventArgs e)
+    {
+        if (TestRecording.Active || TestRecording.HighFrequencyBusy) {
+            HighFrequencyOption.IsChecked = TestRecording.HighFrequencyEnabled; return;
+        }
+        TestRecording.HighFrequencyEnabled = HighFrequencyOption.IsChecked == true;
+        TestRecording.HighFrequencyStatus = TestRecording.HighFrequencyEnabled ? "高频诊断已开启" : "普通记录（高频关闭）";
+    }
     private void StartClick(object sender, RoutedEventArgs e)
     {
-        try { TestRecording.Start(Root); previousSettings = null; annotationFolder = TestRecording.DirectoryPath; marks.Clear(); AnnotationFolder.Text = annotationFolder; Capture(); }
+        try { TestRecording.Start(Root); TestRecording.Record("capture_mode", new { highFrequency = TestRecording.HighFrequencyEnabled, ordinaryTelemetry = true }); previousSettings = null; annotationFolder = TestRecording.DirectoryPath; marks.Clear(); AnnotationFolder.Text = annotationFolder; Capture(); }
         catch (Exception ex) { StatusText.Text = "无法开始记录：" + ex.Message; }
     }
     private async void StopClick(object sender, RoutedEventArgs e)

@@ -59,7 +59,7 @@ public class ClientTests
         Assert.Equal(22, client.Status.Length);
         await client.BeginAsync(1, 4000000, Limits, CancellationToken.None);
         Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1], out var begin));
-        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 1, 1000000, 4000000, 20000000, 1000000, 4000000, 20000000 }, begin);
+        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 3, 1000000, 4000000, 20000000, 1000000, 4000000, 20000000 }, begin);
     }
 
     [Fact]
