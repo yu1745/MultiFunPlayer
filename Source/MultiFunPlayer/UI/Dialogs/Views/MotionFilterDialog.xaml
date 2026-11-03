@@ -4,67 +4,100 @@
              xmlns:s="https://github.com/canton7/Stylet"
              xmlns:material="http://materialdesigninxaml.net/winfx/xaml/themes"
              x:ClassModifier="internal">
-    <ScrollViewer MaxHeight="760" VerticalScrollBarVisibility="Auto">
-        <StackPanel Width="700" Margin="24">
+    <DockPanel Margin="16" LastChildFill="True">
+        <StackPanel DockPanel.Dock="Top">
             <TextBlock Text="六轴脚本滤波器" FontSize="22" Margin="0 0 0 8"/>
-            <TextBlock Text="削弱高频、细碎的快速反向动作，保留较慢的整体运动。六轴共用参数，分别计算。"
+<Expander Header="滤波参数（展开调整）" IsExpanded="False"><ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto"><StackPanel>            <TextBlock Text="局部冲击滤波：按现有七阶曲线的速度、加速度和加加速度包络识别极端片段，保留时间点与方向。每轴独立；0 旁路，100 最强。"
                        TextWrapping="Wrap" Opacity=".75" Margin="0 0 0 12"/>
             <CheckBox Content="启用六轴滤波 · L0 / L1 / L2 / R0 / R1 / R2" IsChecked="{Binding Enabled}" Margin="0 0 0 16"/>
-            <Grid Margin="0 0 0 12">
-                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                <TextBox Text="{Binding ThresholdPercent, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"
-                         material:HintAssist.Hint="速度阈值（% 行程/秒）" material:HintAssist.IsFloating="True" Margin="0 0 16 0"/>
-                <TextBox Grid.Column="1" Text="{Binding SmoothingMilliseconds, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"
-                         material:HintAssist.Hint="平滑时间（ms，越大越柔和）" material:HintAssist.IsFloating="True"/>
-            </Grid>
-            <TextBlock Text="100% 行程/秒 = 每秒走完整行程一次。双向一阶低通处理脚本，不增加持续的单向滤波延迟；快速短动作幅度会减小。"
+            <ItemsControl ItemsSource="{Binding Tuning}" Margin="0 0 0 12">
+                <ItemsControl.ItemTemplate><DataTemplate>
+                    <Grid Margin="0 3">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition/><ColumnDefinition Width="65"/></Grid.ColumnDefinitions>
+                        <CheckBox Content="{Binding Name}" IsChecked="{Binding Enabled}" VerticalAlignment="Center"/>
+                        <Slider Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True"
+                                Value="{Binding Strength}" IsEnabled="{Binding Enabled}" Margin="8 0 16 0"/>
+                        <TextBox Grid.Column="2" Text="{Binding Strength, UpdateSourceTrigger=PropertyChanged, StringFormat=F0}"
+                                 IsEnabled="{Binding Enabled}"/>
+                    </Grid>
+                </DataTemplate></ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Text="开启后强度自动应用；播放中等待缓冲衔接。总开关及各轴开关需暂停。强度为实验性预设，不保证避免掉电；极短动作可能大幅缩程。"
                        TextWrapping="Wrap" Opacity=".7" FontSize="12" Margin="0 0 0 14"/>
+</StackPanel></ScrollViewer></Expander>            <StackPanel Orientation="Horizontal" Margin="0 0 0 8">
+                <CheckBox Content="跟随播放" IsChecked="{Binding FollowPlayback}" Margin="0 0 20 0"/>
+                <CheckBox Content="显示标注标签" IsChecked="{Binding ShowAnnotations}"/>
+            </StackPanel>
+            <TextBlock Text="{Binding AnnotationStatus}" TextWrapping="Wrap" Opacity=".7" Margin="0 0 0 8"/>
             <DockPanel Margin="0 0 0 6">
                 <Button DockPanel.Dock="Right" Content="刷新脚本预览" Command="{s:Action RefreshPreview}" Margin="8 0 0 0"/>
                 <TextBlock Text="{Binding RangeLabel}" VerticalAlignment="Center"/>
             </DockPanel>
             <Grid Margin="0 0 0 8">
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
-                <Slider Minimum="0" Maximum="{Binding PreviewMaximum}" Value="{Binding PreviewStart}" VerticalAlignment="Center" Margin="0 0 16 0"/>
-                <TextBox Grid.Column="1" Text="{Binding PreviewStart, UpdateSourceTrigger=PropertyChanged, StringFormat=F1}" material:HintAssist.Hint="起点 / 秒" Margin="0 0 8 0"/>
+                <Slider SmallChange="0.001" LargeChange="0.01" TickFrequency="0.001" Minimum="0" Maximum="{Binding PlaybackMaximum}" Value="{Binding PlaybackPosition}" ToolTip="视频播放位置；调整后同步播放器" VerticalAlignment="Center" Margin="0 0 16 0"/>
+                <TextBox Grid.Column="1" Text="{Binding PlaybackPosition, UpdateSourceTrigger=LostFocus, StringFormat=F3}" material:HintAssist.Hint="视频 / 秒" Margin="0 0 8 0"/>
                 <TextBox Grid.Column="2" Text="{Binding PreviewSeconds, UpdateSourceTrigger=PropertyChanged}" material:HintAssist.Hint="窗口 / 秒"/>
             </Grid>
+            <StackPanel Orientation="Horizontal" Margin="0 0 0 8">
+                <TextBlock Text="波形视图起点（仅浏览）：" VerticalAlignment="Center"/>
+                <TextBox Width="100" Text="{Binding PreviewStart, UpdateSourceTrigger=LostFocus, StringFormat=F3}" IsEnabled="{Binding FollowPlayback, Converter={StaticResource InvertedNullableToBooleanConverter}}"/>
+                <TextBlock Text="主滑条同步视频；标注以播放器实际时间为准" Margin="16 0 0 0" VerticalAlignment="Center"/>
+            </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0 4 0 8">
                 <TextBlock Text="━ 原始脚本" Foreground="#8895AA" Margin="0 0 24 0"/>
                 <TextBlock Text="━ 滤波结果" Foreground="#009F8B"/>
                 <TextBlock Text="纵轴 0–100% · 横轴为媒体时间" Opacity=".6" Margin="24 0 0 0" FontSize="12"/>
             </StackPanel>
+<TextBlock Text="← / →：10 ms · Shift：1 ms · Ctrl：100 ms（单次按键）" Margin="0 0 0 8"/>
+</StackPanel>
+<StackPanel DockPanel.Dock="Bottom">            <ProgressBar Height="3" IsIndeterminate="{Binding IsBusy}" Margin="0 8 0 8"/>
+            <TextBlock Text="{Binding Status}" TextWrapping="Wrap" FontSize="12" Margin="0 0 0 8"/>
+            <TextBlock Text="{Binding AppliedStatus}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0 0 0 12"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="暂停后重试应用" Command="{s:Action Apply}" IsEnabled="{Binding CanApply}" Margin="0 0 12 0"/>
+                <Button Content="关闭" Command="{s:Action Dismiss}"/>
+            </StackPanel>
+</StackPanel>
             <ItemsControl ItemsSource="{Binding Axes}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <StackPanel Margin="0 0 10 10">
+                        <Grid Margin="0 0 10 10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                                 <DockPanel Margin="0 0 0 3">
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0 0 10 0"/>
                                     <TextBlock Text="{Binding Summary}" FontSize="11" Opacity=".65" VerticalAlignment="Center"/>
                                 </DockPanel>
-                                <Border Background="#101C2C" CornerRadius="4" Padding="4" Height="65">
+                                <Border Grid.Row="1" Background="#101C2C" CornerRadius="4" Padding="4">
                                     <Viewbox Stretch="Fill">
-                                        <Canvas Width="600" Height="64" ClipToBounds="True">
+                                        <Canvas Width="600" Height="{Binding PlotHeight}" ClipToBounds="True">
                                             <Line X1="0" Y1="32" X2="600" Y2="32" Stroke="#334155" StrokeDashArray="3 4"/>
                                             <Polyline Points="{Binding Original}" Stroke="#8895AA" StrokeThickness="1.1"/>
                                             <Polyline Points="{Binding Filtered}" Stroke="#38E0C2" StrokeThickness="1.8"/>
+                                            <Line X1="{Binding CursorX}" X2="{Binding CursorX}" Y1="0" Y2="64" Stroke="#FFFFFF" StrokeThickness="2"/>
+                                            <ItemsControl ItemsSource="{Binding Labels}" Width="600" Height="64">
+                                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate><DataTemplate>
+                                                    <Line X1="{Binding AnchorX}" X2="{Binding AnchorX}" Y1="0" Y2="64" Stroke="#E5AE57" StrokeDashArray="3 3"/>
+                                                </DataTemplate></ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <ItemsControl ItemsSource="{Binding Labels}" Canvas.Top="64" Width="600" Height="{Binding LabelHeight}">
+                                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemContainerStyle><Style TargetType="ContentPresenter">
+                                                    <Setter Property="Canvas.Left" Value="{Binding X}"/><Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                                </Style></ItemsControl.ItemContainerStyle>
+                                                <ItemsControl.ItemTemplate><DataTemplate>
+                                                    <TextBlock Text="{Binding Label}" Foreground="#E5AE57" FontSize="24" ToolTip="{Binding Detail}"/>
+                                                </DataTemplate></ItemsControl.ItemTemplate>
+                                            </ItemsControl>
                                         </Canvas>
                                     </Viewbox>
                                 </Border>
-                        </StackPanel>
+                        </Grid>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <ProgressBar Height="3" IsIndeterminate="{Binding IsBusy}" Margin="0 8 0 8"/>
-            <TextBlock Text="{Binding Status}" TextWrapping="Wrap" FontSize="12" Margin="0 0 0 8"/>
-            <TextBlock Text="{Binding AppliedStatus}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0 0 0 12"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="应用到六轴" Command="{s:Action Apply}" IsEnabled="{Binding CanApply}" Margin="0 0 12 0"/>
-                <Button Content="关闭" Command="{s:Action Dismiss}"/>
-            </StackPanel>
-        </StackPanel>
-    </ScrollViewer>
+</DockPanel>
 </UserControl>

@@ -1,5 +1,6 @@
 using MultiFunPlayer.Common;
 using Stylet;
+using MultiFunPlayer.OutputTarget.Tracking;
 using System.Diagnostics;
 using System.IO;
 using System.Windows.Controls;
@@ -42,22 +43,45 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
     private CancellationTokenSource _cancellationSource;
     private double _internalMediaPosition;
     private long _bufferedTimelineRevision;
+    private long _filterRevision;
     private readonly object _motionFilterLock = new();
     private readonly Dictionary<DeviceAxis, (KeyframeCollection Source, MotionFilterSettings Settings,
         double Rate, double Scale, KeyframeCollection Result)> _motionFilterCache = [];
     [JsonProperty] public MotionFilterSettings MotionFilter { get; private set; } = new();
+
+    public string TestRecordingSettings() => JsonConvert.SerializeObject(new
+    {
+        mediaPath = MediaResource?.Path, PlaybackSpeed, GlobalOffset, MotionFilter,
+        axes = AxisModels.Select(pair => new { axis = pair.Key.Name,
+            source = pair.Value.Script?.Source, name = pair.Value.Script?.Name,
+            path = pair.Value.Script == null ? null : Path.Combine(pair.Value.Script.Source ?? "", pair.Value.Script.Name ?? ""),
+            settings = pair.Value.Settings })
+    });
 
     public MotionFilterSettings GetMotionFilterSettings() => MotionFilter;
 
     public void ApplyMotionFilterSettings(MotionFilterSettings settings)
     {
         if (settings == null || !settings.IsValid) throw new ArgumentException("滤波参数无效。");
+        if(settings==MotionFilter && (IsPlaying || !FilterRuntime.Instance.Text.Contains("需暂停")))return;
+        var switchesChanged=settings.Enabled!=MotionFilter.Enabled || MotionScriptFilter.Axes.Any(a=>settings.ForAxis(a).Enabled!=MotionFilter.ForAxis(a).Enabled);
+        if(IsPlaying && (switchesChanged || FilterRuntime.BufferedConnections!=1))
+            throw new InvalidOperationException(switchesChanged ? "开关滤波需要先暂停播放。" : "实时强度调整仅在单路 Buffered Update 连接中可用；请暂停后应用。");
+        var previous=MotionFilter;
+        FilterRuntime.Enabled=settings.Enabled;
+        FilterUsageLog.Configure(settings.Enabled);
+        long revision;
         lock (_motionFilterLock)
         {
             MotionFilter = settings;
             _motionFilterCache.Clear();
+            revision=Interlocked.Increment(ref _filterRevision);
         }
-        Interlocked.Increment(ref _bufferedTimelineRevision);
+        FilterUsageLog.Write("adjustment_requested",new{revision,mediaSeconds=MediaPosition,video=MediaResource?.Path,previous,requested=settings,playing=IsPlaying});
+        if(!IsPlaying) Interlocked.Increment(ref _bufferedTimelineRevision);
+        FilterRuntime.Status(settings.Enabled ? IsPlaying ? "滤波调整中" : "滤波已启用" : "滤波关闭",IsPlaying);
+        FilterUsageLog.Write(IsPlaying ? "settings_pending_buffer" : "settings_applied_paused",new{revision,MediaPosition,settings});
+        MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("filter_applied", new { MediaPosition, settings, revision, pendingBuffer=IsPlaying });
     }
 
     private KeyframeCollection GetMotionKeyframes(DeviceAxis axis)
@@ -71,7 +95,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         {
             if (_motionFilterCache.TryGetValue(axis, out var cached) && ReferenceEquals(cached.Source, source)
                 && cached.Settings == settings && cached.Rate == rate && cached.Scale == scale) return cached.Result;
-            var filtered = MotionScriptFilter.Apply(source, settings, rate, scale);
+            var filtered = MotionScriptFilter.Apply(source, settings, rate, scale, axis.Name);
             var result = ReferenceEquals(filtered, source) ? source : new KeyframeCollection(filtered);
             _motionFilterCache[axis] = (source, settings, rate, scale, result);
             return result;
@@ -141,8 +165,15 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         AxisChapters = AxisModels.CreateView(model => model.Script?.Chapters, "Script");
         AxisBookmarks = AxisModels.CreateView(model => model.Script?.Bookmarks, "Script");
 
-        foreach (var (_, settings) in AxisSettings)
+        foreach (var (axis, settings) in AxisSettings)
+        {
             settings.PropertyChanged += OnAxisSettingsPropertyChanged;
+            settings.PropertyChanged += (_, e) => {
+                if (MultiFunPlayer.OutputTarget.Tracking.TestRecording.Active)
+                    MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("script_setting_changed", new {
+                        axis = axis.Name, MediaPosition, property = e.PropertyName, settingsJson = JsonConvert.SerializeObject(settings) });
+            };
+        }
 
         _cancellationSource = new CancellationTokenSource();
         _updateThread = new Thread(() => UpdateThread(_cancellationSource.Token)) { IsBackground = true };
@@ -618,6 +649,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
             return;
 
         Logger.Info("Received {0} [IsPlaying: {1}]", nameof(MediaPlayingChangedMessage), message.IsPlaying);
+        FilterUsageLog.Write("play_state",new{MediaPosition,playing=message.IsPlaying,video=MediaResource?.Path});
 
         if (SyncSettings.SyncOnMediaPlayPause)
             ResetSync();
@@ -644,6 +676,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
 
         Logger.Info("Received {0} [Speed: {1}]", nameof(MediaSpeedChangedMessage), message.Speed);
         PlaybackSpeed = message.Speed;
+        FilterUsageLog.Write("playback_speed",new{MediaPosition,PlaybackSpeed});
     }
 
     public void Handle(MediaPositionChangedMessage message)
@@ -660,6 +693,9 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         }
 
         var newPosition = message.Position.TotalSeconds;
+        Volatile.Write(ref _bufferedMediaSample, new MediaClockSample(newPosition,
+            System.Diagnostics.Stopwatch.GetTimestamp() * 1000000d / System.Diagnostics.Stopwatch.Frequency,
+            Interlocked.Increment(ref _bufferedMediaSampleSequence)));
         Logger.Trace("Received {0} [Position: {1}]", nameof(MediaPositionChangedMessage), message.Position.ToString());
 
         if (!double.IsFinite(MediaPosition))
@@ -674,6 +710,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         if (wasSeek)
         {
             Logger.Debug("Detected seek: {0}", error);
+            FilterUsageLog.Write("seek",new{from=MediaPosition,to=newPosition});
             if (SyncSettings.SyncOnSeek)
                 ResetSync();
 
@@ -734,7 +771,12 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
 
             if (settings.TryGetValue<double>(nameof(GlobalOffset), out var globalOffset)) GlobalOffset = globalOffset;
             if (settings.TryGetValue<MotionFilterSettings>(nameof(MotionFilter), out var motionFilter)
-                && motionFilter != null && motionFilter.IsValid) ApplyMotionFilterSettings(motionFilter);
+                && motionFilter != null && motionFilter.IsValid)
+            {
+                // Legacy shared low-pass settings must not silently enable a new algorithm.
+                var version = settings[nameof(MotionFilter)]?[nameof(MotionFilterSettings.AlgorithmVersion)];
+                ApplyMotionFilterSettings(version?.Value<int>() == 3 ? motionFilter : new MotionFilterSettings());
+            }
             if (settings.TryGetValue<bool>(nameof(ValuesContentVisible), out var valuesContentVisible)) ValuesContentVisible = valuesContentVisible;
             if (settings.TryGetValue<bool>(nameof(MediaContentVisible), out var mediaContentVisible)) MediaContentVisible = mediaContentVisible;
             if (settings.TryGetValue<bool>(nameof(AxisContentVisible), out var axisContentVisible)) AxisContentVisible = axisContentVisible;
@@ -793,8 +835,13 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
     private double GetAxisPosition(DeviceAxis axis) => MediaPosition - GlobalOffset - AxisSettings[axis].Offset;
     public double GetValue(DeviceAxis axis) => MathUtils.Clamp01(AxisStates[axis].Value);
 
+    private MediaClockSample _bufferedMediaSample;
+    private long _bufferedMediaSampleSequence;
+
     public BufferedPlaybackSnapshot GetBufferedPlaybackSnapshot(bool applyMotionFilter = true)
     {
+        lock(_motionFilterLock)
+        {
         var axes = new List<BufferedScriptAxis>();
         foreach (var axis in DeviceAxis.All)
         {
@@ -812,10 +859,24 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
                 : null;
             axes.Add(new(axis.Name, keyframes, GlobalOffset + settings.Offset,
                 settings.ScriptScale, settings.InvertScript, axis.DefaultValue,
-                UnsupportedReason: unsupported));
+                UnsupportedReason: unsupported, OriginalKeyframes: AxisKeyframes[axis]));
+        }
+        if(MotionFilter.Enabled && FilterUsageLog.SampleDue()) {
+            FilterUsageLog.Write("playback_context",new{MediaPosition,IsPlaying,PlaybackSpeed,GlobalOffset,settings=TestRecordingSettings(),motorLog=TestRecording.DirectoryPath});
+            if(applyMotionFilter) {
+                object Stats(IReadOnlyList<Keyframe> keys,double from,double to) {
+                    var window=keys.Where(k=>k.Position>=from && k.Position<=to).ToArray();
+                    return new{points=window.Length,range=window.Length==0?0:window.Max(k=>k.Value)-window.Min(k=>k.Value),travel=window.Zip(window.Skip(1)).Sum(p=>Math.Abs(p.Second.Value-p.First.Value))};
+                }
+                FilterUsageLog.Write("requested_filter_window",new{revision=_filterRevision,MediaPosition,windowSeconds=2,
+                    note="requested keyframe window, not motor feedback or proof of applied buffer",axes=axes.Select(a=>new{a.Name,raw=Stats(a.OriginalKeyframes ?? a.Keyframes,MediaPosition-a.Offset,MediaPosition-a.Offset+2),filtered=Stats(a.Keyframes,MediaPosition-a.Offset,MediaPosition-a.Offset+2)})});
+            }
+            foreach(var pair in AxisModels) if(pair.Value.Script!=null)
+                FilterUsageLog.Identify(Path.Combine(pair.Value.Script.Source ?? "",pair.Value.Script.Name ?? ""));
         }
         return new(IsPlaying, MediaPosition, PlaybackSpeed,
-            Interlocked.Read(ref _bufferedTimelineRevision), axes);
+            Interlocked.Read(ref _bufferedTimelineRevision), axes,Interlocked.Read(ref _filterRevision), Volatile.Read(ref _bufferedMediaSample));
+            }
     }
 
     public void BeginEventPolling(object context)
@@ -979,6 +1040,9 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
         else
             Logger.Debug("Reset {0} script", axis);
 
+        MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("script_changed", new {
+            axis = axis.Name, MediaPosition, name = script?.Name, source = script?.Source,
+            path = script == null ? null : Path.Combine(script.Source ?? "", script.Name ?? "") });
         _eventAggregator.Publish(new ScriptChangedMessage(axis, script));
 
         UpdateLinkedScriptsTo(axis);
@@ -2180,6 +2244,8 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
 
     private void Dispose(bool disposing)
     {
+        FilterUsageLog.Configure(false);
+        try { FilterUsageLog.Completion.Wait(TimeSpan.FromSeconds(2)); } catch { }
         _cancellationSource?.Cancel();
         _updateThread?.Join();
         _cancellationSource?.Dispose();

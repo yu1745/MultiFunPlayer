@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using MultiFunPlayer.Common;
 using MultiFunPlayer.Input;
 using MultiFunPlayer.Input.TCode;
@@ -36,7 +36,8 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     protected override TrackingMonitor Tracking => _trackingMonitor;
     protected override bool TrackingRequested => TrackingEnabled;
     // Leave ACK headroom even if a UART user keeps the old 115200 setting.
-    protected override int TrackingPeriodMs => BaudRate <= 115200 ? 50 : BaudRate <= 230400 ? 40 : 20;
+    // Raising UART throughput must not raise motor health query load.
+    protected override int TrackingPeriodMs => 50;
     public void OpenTracking()
     {
         if (_trackingWindow != null) { _trackingWindow.Activate(); return; }
@@ -46,24 +47,37 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     }
     public bool IsManualOpen { get; private set; }
     public bool IsFilterOpen { get; private set; }
-    public bool CanOpenFilter => !IsFilterOpen && !IsPresetOpen && !IsManualOpen;
+    public bool CanOpenFilter => !IsFilterOpen && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy;
 
-    public async Task OpenFilter()
+    private System.Windows.Window _filterWindow;
+    public void OpenFilter()
     {
+        if (_filterWindow != null) { _filterWindow.Activate(); return; }
         if (!CanOpenFilter) return;
-        IsFilterOpen = true;
-        try
-        {
-            EventAggregator.Publish(new MediaPlayPauseMessage(false));
-            await DialogHelper.ShowAsync(new MotionFilterDialog(_filterProvider), "RootDialog").ConfigureAwait(true);
-        }
-        finally
-        {
-            EventAggregator.Publish(new MediaPlayPauseMessage(false));
-            IsFilterOpen = false;
-        }
+        var model = new MotionFilterDialog(_filterProvider);
+        var window = DialogHelper.CreateFloatingWindow(model, "实时脚本波形 · MultiFunPlayer");
+        _filterWindow = window; IsFilterOpen = true;
+        model.SeekRequested += position => EventAggregator.Publish(new MediaSeekMessage(TimeSpan.FromSeconds(position)));
+        model.CloseRequested += window.Close;
+        window.Closed += (_, _) => { model.CloseRequested -= window.Close; _filterWindow = null; IsFilterOpen = false; };
+        window.PreviewKeyDown += (_, e) => {
+            if (e.Key != System.Windows.Input.Key.Left && e.Key != System.Windows.Input.Key.Right) return;
+            if (System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase) return;
+            var mods = System.Windows.Input.Keyboard.Modifiers;
+            if (mods.HasFlag(System.Windows.Input.ModifierKeys.Alt)) return;
+            e.Handled = true;
+            if(e.IsRepeat) return;
+            var snapshot = _filterProvider.GetBufferedPlaybackSnapshot(false);
+            if(!double.IsFinite(snapshot.Position)) return;
+            var step = mods.HasFlag(System.Windows.Input.ModifierKeys.Shift) ? .001 : mods.HasFlag(System.Windows.Input.ModifierKeys.Control) ? .100 : .010;
+            var position = Math.Max(0, snapshot.Position + (e.Key == System.Windows.Input.Key.Left ? -step : step));
+            if(_filterProvider is MultiFunPlayer.UI.Controls.ViewModels.ScriptViewModel script && double.IsFinite(script.MediaDuration))
+                position = Math.Min(position, Math.Max(0,script.MediaDuration));
+            EventAggregator.Publish(new MediaSeekMessage(TimeSpan.FromSeconds(position)));
+        };
+        try { window.Show(); } catch { _filterWindow=null; IsFilterOpen=false; throw; }
     }
-    public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen;
+    public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy;
 
     public async Task OpenManual()
     {
@@ -96,9 +110,69 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             IsManualOpen = false;
         }
     }
+    public bool IsRecoveryBusy { get; private set; }
+    public string RecoveryStatus { get; private set; } = "";
+    public bool CanRecoverMotors => IsConnected && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy
+        && UpdateType == DeviceAxisUpdateType.BufferedUpdate;
+
+    public async Task RecoverMotors()
+    {
+        if (!CanRecoverMotors) return;
+        IsRecoveryBusy = true;
+        AutoConnectEnabled = false;
+        RecoveryStatus = "正在停止播放并等待输出停止…";
+        SerialPresetSession session = null;
+        try
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            // Do not start recovery while the media is still playing; a failed
+            // pause acknowledgement must never resume motion after recovery.
+            for (var i = 0; i < 100 && _filterProvider.GetBufferedPlaybackSnapshot(false).IsPlaying; i++)
+                await Task.Delay(30).ConfigureAwait(true);
+            if (_filterProvider.GetBufferedPlaybackSnapshot(false).IsPlaying)
+                throw new IOException("播放器未确认暂停，未执行重载。请先暂停视频。");
+            session = new SerialPresetSession();
+            lock (_modeLock)
+            {
+                if (!IsConnected || !_serialRunning || _presetSession != null || _manualSession != null)
+                    throw new IOException("串口不可用，未执行重载。");
+                _presetSession = session;
+                _motionCancellation?.Cancel();
+            }
+            await session.Ready.ConfigureAwait(true);
+            RecoveryStatus = "正在检查故障并重载，请勿开始播放…";
+            var result = await MotorFaultRecovery.RunAsync(async command =>
+            {
+                Logger.Info("Motor recovery TX: {0}", command);
+                var reply = await session.ExecuteAsync("sh " + command, 20000).ConfigureAwait(false);
+                return (string)reply["text"] ?? "";
+            }, text => Logger.Info("Motor recovery RX: {0}", text)).ConfigureAwait(true);
+            RecoveryStatus = result;
+        }
+        catch (Exception error)
+        {
+            Logger.Error(error, "Manual motor recovery failed");
+            RecoveryStatus = error.Message;
+        }
+        finally
+        {
+            // The serial worker owns the port throughout; never reconnect it.
+            // Keep the command session until media has acknowledged pause.
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            if (session != null)
+            {
+                if (!ReferenceEquals(_presetSession, session)) session.Fail(new IOException("串口会话已结束。"));
+                while (IsConnected && _filterProvider.GetBufferedPlaybackSnapshot(false).IsPlaying)
+                    await Task.Delay(50).ConfigureAwait(true);
+                session.Close();
+                await session.Finished.ConfigureAwait(true);
+            }
+            IsRecoveryBusy = false;
+        }
+    }
     private bool _serialRunning;
     public bool IsPresetOpen { get; private set; }
-    public bool CanOpenPresets => IsConnected && !IsPresetOpen && !IsManualOpen;
+    public bool CanOpenPresets => IsConnected && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy;
 
     public async Task OpenPresets()
     {

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -7,12 +7,15 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../MultiFunPlayer/OutputTarget/Tracking/*.cs" Link="Production/Tracking/%(Filename)%(Extension)" />
+    <None Update="TestData/dense-keyframes.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="TestData/motor-health.frame" CopyToOutputDirectory="PreserveNewest" />
     <None Update="TestData/tracking-cad.frames" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" PrivateAssets="all" />
     <Using Include="Xunit" />
   </ItemGroup>
+  <ItemGroup><Compile Include="../MultiFunPlayer/OutputTarget/SerialPresetSession.cs" Link="Production/SerialPresetSession.cs" /><Compile Include="../MultiFunPlayer/OutputTarget/MotorFaultRecovery.cs" Link="Production/MotorFaultRecovery.cs" /></ItemGroup>
   <!-- Exercise the production protocol/planner on Linux as well as Windows,
        without requiring the WPF desktop runtime. -->
   <ItemGroup>
@@ -21,9 +24,13 @@
     <Compile Include="../MultiFunPlayer/Common/BufferedPlaybackSnapshot.cs" Link="Production/BufferedPlaybackSnapshot.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedProtocol.cs" Link="Production/TCodeBufferedProtocol.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeDeviceDiagnostic.cs" Link="Production/TCodeDeviceDiagnostic.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/BufferedFilterSplice.cs" Link="Production/BufferedFilterSplice.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/BufferedReversalCurve.cs" Link="Production/BufferedReversalCurve.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlan.cs" Link="Production/TCodeBufferedPlan.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/BufferedSessionLimits.cs" Link="Production/BufferedSessionLimits.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/HighFrequencyCapture.cs" Link="Production/HighFrequencyCapture.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedClient.cs" Link="Production/TCodeBufferedClient.cs" />
+    <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/MediaStartGate.cs" Link="Production/MediaStartGate.cs" />
     <Compile Include="../MultiFunPlayer/OutputTarget/TCodeBuffered/TCodeBufferedPlayback.cs" Link="Production/TCodeBufferedPlayback.cs" />
   </ItemGroup>
 </Project>

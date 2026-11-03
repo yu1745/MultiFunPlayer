@@ -6,6 +6,12 @@ namespace MultiFunPlayer.UI.Tracking;
 
 internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyChangedBase
 {
+    public string LoadStatus { get; private set; }
+    public string LoadValues { get; private set; }
+    public string[] TestStages { get; } = ["第一阶段：完整机构空载", "第二阶段：刚性配重", "第三阶段：臀模", "阶段待确认"];
+    public int SelectedStage { get; set; } = monitor.TestStage switch { "第二阶段：刚性配重" => 1, "第三阶段：臀模" => 2, "阶段待确认" => 3, _ => 0 };
+    public void OnSelectedStageChanged() { monitor.SetTestStage(TestStages[Math.Clamp(SelectedStage,0,3)]); TestRecording.State("test_stage", new { stage = TestStages[Math.Clamp(SelectedStage,0,3)], source = "user_confirmed", inferred = false }); }
+    public void CaptureBaseline() => monitor.CaptureLoadBaseline();
     public string[] AxisNames { get; } = TrackingSnapshot.Names;
     public double[] Windows { get; } = [2, 4, 8, 12];
     public int SelectedAxis { get; set; }
@@ -13,6 +19,7 @@ internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyCha
     public string State { get; private set; } = "等待数据";
     public string Quality { get; private set; }
     public string Health { get; private set; }
+    public string MotorStatus { get; private set; }
     public string Timing { get; private set; }
     public string Unit { get; private set; } = "mm";
     public double ChartOpacity { get; private set; } = .4;
@@ -25,6 +32,11 @@ internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyCha
     public void Reset() => monitor.Reset();
     public void UpdateSnapshot()
     {
+        OnSelectedStageChanged();
+        var estimate = monitor.Load;
+        var loadLive = monitor.IsLive && monitor.MotorHealth is { ElapsedMs: < 750 };
+        LoadStatus = loadLive ? $"{estimate.State} · 基线姿态 {estimate.BaselineCount} · 采集 {estimate.CaptureCount}/15" : "回传不可用，载荷估计暂停";
+        LoadValues = loadLive && estimate.ResidualA != null ? string.Join("   ", estimate.ResidualA.Select((x,i) => $"M{i+1}: {x:+0.00;-0.00;0.00} A")) : "—";
         var snapshot = monitor.Snapshot;
         var live = monitor.IsLive;
         var age = snapshot.Quality.LastPacketHostSeconds > 0 ? (TrackingMonitor.HostSeconds - snapshot.Quality.LastPacketHostSeconds) * 1000 : double.NaN;
@@ -44,14 +56,9 @@ internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyCha
             (q.WorkspaceReduced ? "  ·  工作空间裁剪中" : "");
         Cards = [
             Make("实时位置误差", s.Error, Unit, "反馈 − 同时刻目标"),
-            Make("RMS 跟随误差", s.Rms, Unit, "原始时间轴，不补偿滞后"),
-            Make("P95 绝对误差", s.P95, Unit, "95% 有效采样点的误差上界"),
-            Make("跟随延迟", s.DelayMs, "ms", "正值为滞后；约 ±250 ms 搜索"),
-            Make("幅度保持率", s.AmplitudePercent, "%", "对齐延迟后的增益／周期基波幅度比"),
-            Make("转折／到位超调", s.Overshoot, Unit, "完整转折或到位保持的超出量"),
-            Make("主频相位误差", s.PhaseDegrees, "°", s.FrequencyHz.Value.HasValue ? $"主频 {s.FrequencyHz.Value:0.##} Hz · ±180°" : s.FrequencyHz.Reason),
-            new("目标 / 估计实际", live && selected.InvalidReason == null && selected.Points.LastOrDefault(p => double.IsFinite(p.Actual)) is var p && double.IsFinite(p.Actual)
-                ? $"{Format(p.Target)} / {Format(p.Actual)} {Unit}" : "—", "由电机编码器与固定 CAD 模型重建", "不是独立末端传感器测量")
+            Make("RMS 跟随误差", s.Rms, Unit, "保留真实滞后"),
+            Make("跟随延迟", s.DelayMs, "ms", "正值为滞后"),
+            Make("幅度保持率", s.AmplitudePercent, "%", "对齐延迟后的幅度比")
         ];
         Rows = snapshot.Axes.Select(a => {
             var stats = live ? a.Statistics : AxisTrackingStatistics.Unavailable(State);
@@ -59,9 +66,19 @@ internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyCha
                 Display(stats.DelayMs, "0"), Display(stats.AmplitudePercent, "0.0"), Display(stats.Overshoot),
                 live ? a.InvalidReason ?? (stats.DelayMs.Value.HasValue ? "有效" : stats.DelayMs.Reason) : "数据过期");
         }).ToArray();
-        Motors = snapshot.Motors.Select((m, i) => new MotorRow($"M{i + 1}" + (i == 6 ? " · R0" : ""),
-            live ? Format(m.CommandDegrees) : "—", live ? Format(m.ActualDegrees) : "—",
-            live ? Format(m.ErrorDegrees) : "—", Age(m.FeedbackAgeMs))).ToArray();
+        var health = monitor.MotorHealth;
+        MotorStatus = monitor.MotorAvailability ?? (health == null ? "等待电机状态" :
+            $"状态回传 {1000 / health.Packet.PeriodMs} Hz · 总线忙跳过查询 {health.Packet.SkippedQueries} 次 · — 表示缺失或过期");
+        var elapsed = health?.ElapsedMs ?? double.PositiveInfinity;
+        Motors = snapshot.Motors.Select((m, i) => {
+            var h = health?.Packet.Motors[i];
+            string Value(int f, double scale = 1) => Format(h?.Value(f, elapsed) * scale, "0.0");
+            var state = h == null || h.StateAgeMs + elapsed > 1000 ? "状态过期" :
+                h.Error != 0 ? $"故障 0x{h.Error:X8}" : $"状态 {h.State}";
+            return new MotorRow($"M{i+1}", live ? Format(m.CommandDegrees) : "—",
+                live ? Format(m.ActualDegrees) : "—", live ? Format(m.ErrorDegrees) : "—", Age(m.FeedbackAgeMs),
+                Value(0,180/Math.PI),Value(1),Value(2),Value(3),Value(4),state);
+        }).ToArray();
     }
     private static Card Make(string label, TrackingMetric metric, string unit, string hint) => new(label,
         metric.Value.HasValue ? $"{(unit == "ms" ? "≈ " : "")}{Format(metric.Value, unit == "ms" ? "0" : unit == "%" ? "0.0" : "0.00")} {unit}" : "—", metric.Value.HasValue ? hint : metric.Reason, metric.Reason ?? hint);
@@ -71,5 +88,5 @@ internal sealed class TrackingWindowModel(TrackingMonitor monitor) : PropertyCha
         ? value.Value.ToString(format, CultureInfo.CurrentCulture) : "—";
     internal sealed record Card(string Label, string Value, string Hint, string ToolTip);
     internal sealed record AxisRow(string Axis, string Unit, string Error, string Rms, string P95, string Delay, string Amplitude, string Overshoot, string State);
-    internal sealed record MotorRow(string Motor, string Command, string Actual, string Error, string Age);
+    internal sealed record MotorRow(string Motor, string Command, string Actual, string Error, string Age, string Speed, string Current, string FetTemperature, string MotorTemperature, string Voltage, string State);
 }

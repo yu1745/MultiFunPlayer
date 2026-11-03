@@ -76,6 +76,19 @@ internal static class DialogHelper
         return result;
     }
 
+    public static Window CreateFloatingWindow(object model, string title)
+    {
+        var window = new Window {
+            Title = title, Width = 1180, Height = 880, MinWidth = 780, MinHeight = 560,
+            ResizeMode = ResizeMode.CanResizeWithGrip, WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Background = SystemColors.WindowBrush, Foreground = SystemColors.WindowTextBrush,
+            Content = ViewManager.CreateAndBindViewForModelIfNecessary(model)
+        };
+        window.Loaded += (_, _) => (model as IScreenState)?.Activate();
+        window.Closed += (_, _) => (model as IScreenState)?.Deactivate();
+        return window;
+    }
+
     public static void CloseByModel(object model, object parameter = null)
         => Close(() => GetInstance(d => IsModelEqual(d, model)), parameter);
     public static void CloseByModel(object model, string dialogIdentifier, object parameter = null)

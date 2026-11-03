@@ -1,4 +1,4 @@
-using Newtonsoft.Json.Linq;
+﻿using Newtonsoft.Json.Linq;
 using System.Buffers.Binary;
 using System.IO;
 using System.Text;
@@ -11,7 +11,7 @@ namespace MultiFunPlayer.OutputTarget;
 // owns the port while open; movement and its receiver have already stopped.
 internal sealed class SerialPresetSession
 {
-    private sealed record Request(string Command, TaskCompletionSource<JObject> Completion);
+    private sealed record Request(string Command, int TimeoutMs, TaskCompletionSource<JObject> Completion);
     private readonly Channel<Request> requests = Channel.CreateUnbounded<Request>();
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -27,13 +27,13 @@ internal sealed class SerialPresetSession
         finished.TrySetResult();
     }
 
-    public async Task<JObject> ExecuteAsync(string command)
+    public async Task<JObject> ExecuteAsync(string command, int timeoutMs = 8000)
     {
         if (command.Contains('\r') || command.Contains('\n') || Encoding.UTF8.GetByteCount(command) > 220)
             throw new ArgumentException("无效的预设命令。");
         await Ready.ConfigureAwait(false);
         var completion = new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await requests.Writer.WriteAsync(new(command, completion)).ConfigureAwait(false);
+        await requests.Writer.WriteAsync(new(command, Math.Clamp(timeoutMs, 1000, 30000), completion)).ConfigureAwait(false);
         return await completion.Task.ConfigureAwait(false);
     }
 
@@ -47,7 +47,7 @@ internal sealed class SerialPresetSession
             ready.TrySetResult();
             await foreach (var request in requests.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
-                try { request.Completion.TrySetResult(await ExchangeAsync(request.Command).ConfigureAwait(false)); }
+                try { request.Completion.TrySetResult(await ExchangeAsync(request.Command, request.TimeoutMs).ConfigureAwait(false)); }
                 catch (DeviceReplyException error) { request.Completion.TrySetException(error); }
                 catch (Exception error) { request.Completion.TrySetException(error); throw; }
             }
@@ -55,14 +55,14 @@ internal sealed class SerialPresetSession
         catch (Exception error) { Fail(error); throw; }
         finally { finished.TrySetResult(); }
 
-        async Task<JObject> ExchangeAsync(string command)
+        async Task<JObject> ExchangeAsync(string command, int timeoutMs = 8000)
         {
             token.ThrowIfCancellationRequested();
             var id = ++nextId;
             var assembler = new ReplyAssembler(id);
             write($"${id} {command}\n");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(8));
+            timeout.CancelAfter(timeoutMs);
             try
             {
                 while (true)

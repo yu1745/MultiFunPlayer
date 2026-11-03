@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading.Channels;
@@ -23,12 +23,15 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private readonly TrackingMonitor _tracking;
     private readonly Func<bool> _trackingEnabled;
     private readonly Func<int> _trackingPeriodMs;
+    private HighFrequencyCapture _highFrequency;
+    public void StartHighFrequency(Func<bool> paused) => _highFrequency ??= new HighFrequencyCapture(
+        WriteWireAsync, () => paused() && !MayOwnMotion, () => Boot, _diagnostic, enabled: () => TestRecording.HighFrequencyEnabled);
     private readonly SemaphoreSlim _writeGate = new(1, 1);
     private readonly Channel<ulong[]> _trackingReplies = Channel.CreateBounded<ulong[]>(4);
     private readonly CancellationTokenSource _trackingCancellation = new();
     private Task _trackingPump;
     private ulong _trackingRequest = 1UL << 40;
-    private bool _trackingAttempted;
+    private bool _trackingAttempted, _motorAttempted, _motorUnsupported;
     private ulong _request;
     private ulong _query = 4294967296;
     private double _offset;
@@ -61,6 +64,8 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private async Task ReceiveAsync(Func<CancellationToken, Task<string>> read, CancellationToken token)
     {
         var buffer = new StringBuilder();
+        bool discardLine = false;
+        long badFrames = 0;
         try
         {
             while (!token.IsCancellationRequested)
@@ -69,15 +74,34 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                 if (chunk == null) throw new IOException("TCode connection closed.");
                 foreach (var c in chunk)
                 {
+                    if (c == '!' && buffer.Length > 0) {
+                        _diagnostic?.Invoke($"RX resynchronized at frame marker; discardedChars={buffer.Length}");
+                        buffer.Clear(); discardLine=false;
+                    }
                     if (c != '\n')
                     {
+                        if (discardLine) continue;
                         buffer.Append(c);
                         if (buffer.Length > 4096)
-                            throw new InvalidDataException("TCode reply line exceeds the receive buffer.");
+                            { buffer.Clear(); discardLine=true; _diagnostic?.Invoke("RX oversized line discarded; resynchronizing at newline"); }
                         continue;
                     }
+                    if (discardLine) { discardLine=false; buffer.Clear(); continue; }
                     var line = buffer.ToString();
                     buffer.Clear();
+                    var hfIndex = line.IndexOf("!HF1,", StringComparison.Ordinal);
+                    if (hfIndex >= 0) { _highFrequency?.Receive(line[hfIndex..]); continue; }
+                    if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^\s*DHF \d+ read(?:z)? ")) continue;
+                    var motorTelemetry = line.IndexOf(MotorHealthPacket.Prefix, StringComparison.Ordinal);
+                    if (motorTelemetry >= 0)
+                    {
+                        if (MotorHealthPacket.TryDecode(line[motorTelemetry..], out var health, out var healthError))
+                        {
+                            if (health.Boot == Boot && Boot != 0) _tracking?.AcceptMotor(health, Now);
+                        }
+                        else TestRecording.Record("motor_health_bad_packet", new { error = healthError });
+                        continue;
+                    }
                     var telemetry = line.IndexOf(TrackingPacket.Prefix, StringComparison.Ordinal);
                     if (telemetry >= 0)
                     {
@@ -102,7 +126,11 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                         continue;
                     }
                     if (!TCodeBufferedProtocol.TryDecode(line[start..], out var fields))
-                        throw new InvalidDataException("Invalid TCode 0.4 acknowledgement (format or CRC32).");
+                        {
+                        badFrames++;
+                        _diagnostic?.Invoke($"RX invalid ACK discarded count={badFrames} length={line.Length} rawHex={Convert.ToHexString(Encoding.UTF8.GetBytes(line))}; transaction retry budget unchanged");
+                        continue;
+                    }
                     if (fields.Length >= 6 && fields[1] >= (1UL << 40) && fields[0] != 105)
                     {
                         // Independent read-only subscription IDs: these replies
@@ -114,7 +142,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     {
                         if (fields.Length != 18 || fields[6] > 7 || fields[8] is > 5 and not 255
                             || fields[9] > 7 || fields.Skip(12).Any(x => x > uint.MaxValue))
-                            throw new InvalidDataException("Invalid TCode 0.4 diagnostic event.");
+                            { _diagnostic?.Invoke("RX invalid diagnostic schema discarded"); continue; }
                         var entry = TCodeDeviceDiagnostic.Decode(fields);
                         _deviceDiagnostics.Enqueue(entry);
                         while (_deviceDiagnostics.Count > 64) _deviceDiagnostics.TryDequeue(out _);
@@ -122,7 +150,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                         continue; // An unsolicited event is never an ACK.
                     }
                     if (!ValidReply(fields))
-                        throw new InvalidDataException("Invalid TCode 0.4 acknowledgement schema.");
+                        { _diagnostic?.Invoke("RX invalid ACK schema discarded"); continue; }
                     _replies.Writer.TryWrite(fields);
                 }
             }
@@ -157,7 +185,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         var entries = _deviceDiagnostics.Where(d => d.Boot == Boot && d.Session == Session && !d.IsContext).ToArray();
         var fault = entries.LastOrDefault(d => d.State == 5);
         var relevant = fault ?? entries.LastOrDefault();
-        return new IOException(context + $" state={Status?[5]}; underruns={Status?.ElementAtOrDefault(21)}." +
+        return new PlaybackHoldException(context + $" state={Status?[5]}; underruns={Status?.ElementAtOrDefault(21)}." +
             (relevant == null ? " No detailed device diagnostic received." : $" P4 event={relevant.Sequence}: {relevant.Message}"));
     }
 
@@ -253,7 +281,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     private async Task<ulong[]> TransactWithAttemptsAsync(ulong operation, CancellationToken token, int attempts, params ulong[] args)
     {
-        var id = operation is 0 or 6 or 9 or 10 or 11 ? ++_query : ++_request;
+        var id = operation is 0 or 6 or 9 or 10 or 11 or 15 or 16 ? ++_query : ++_request;
         var before = _deviceDiagnostics.LastOrDefault()?.Sequence ?? 0;
         _commandDiagnostic = null;
         var wire = TCodeBufferedProtocol.Encode(new ulong[] { operation, id, Boot, Session }.Concat(args));
@@ -266,7 +294,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             {
                 var sent = HostMicroseconds;
                 _diagnostic?.Invoke($"TX op={operation} id={id} boot={Boot} session={Session} attempt={attempt + 1}/{attempts} args=[{string.Join(',', args)}]");
-                await WriteWireAsync(wire, timeout.Token).ConfigureAwait(false);
+                await WriteWireAsync(attempt == 0 ? wire : "\n" + wire, timeout.Token).ConfigureAwait(false);
                 while (true)
                 {
                     var reply = await _replies.Reader.ReadAsync(timeout.Token).ConfigureAwait(false);
@@ -322,7 +350,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     public async Task BeginAsync(ulong mask, ulong start, BufferedSessionLimits limits, CancellationToken token)
     {
-        var args = new ulong[] { mask, start, 1 }.Concat(limits.Encode()).ToArray();
+        var args = new ulong[] { mask, start, 3 }.Concat(limits.Encode()).ToArray();
         // Mark BEFORE sending: a lost BEGIN ACK may still mean the device has
         // accepted a new session. Cleanup queries that session before STOP.
         _beginSession = Session;
@@ -364,14 +392,21 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private async Task TrackingPumpAsync(CancellationToken token)
     {
         var active = false;
+        var exportSuppressed = false;
         try
         {
             while (!token.IsCancellationRequested)
             {
-                var enabled = _trackingEnabled();
+                var suppress = _highFrequency?.IsExporting == true;
+                if(suppress != exportSuppressed) {
+                    exportSuppressed=suppress;
+                    TestRecording.Record("telemetry_export_gate",new {suppressed=suppress, reason="paused_high_frequency_export", boot=Boot, session=Session});
+                    _diagnostic?.Invoke(suppress ? "HF export: suspend ordinary telemetry" : "HF export: restore ordinary telemetry subscription");
+                }
+                var enabled = _trackingEnabled() && !suppress;
                 if (!enabled && !active)
                 {
-                    _tracking.SetAvailability("跟随监测已关闭");
+                    _tracking.SetAvailability(exportSuppressed ? "暂停期间正在导出高频记录，普通遥测暂缓" : "跟随监测已关闭");
                     await Task.Delay(250, token).ConfigureAwait(false);
                     continue;
                 }
@@ -400,7 +435,8 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                         return;
                     }
                     active = enabled;
-                    if (!active) _tracking.SetAvailability("跟随监测已关闭");
+                    if (!active) _tracking.SetAvailability(exportSuppressed ? "暂停期间正在导出高频记录，普通遥测暂缓" : "跟随监测已关闭");
+                    await RenewMotorHealthAsync(enabled, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 { _tracking.SetAvailability("跟随订阅暂未应答，正在重试；动作输出不受此超时控制"); }
@@ -411,8 +447,36 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
         catch (Exception error) { _tracking.SetAvailability("跟随回传不可用：" + error.Message); }
     }
 
+    private async Task RenewMotorHealthAsync(bool enabled, CancellationToken token)
+    {
+        if (_motorUnsupported) return;
+        var request = ++_trackingRequest;
+        var period = enabled ? (_trackingPeriodMs() >= 40 ? 200UL : 100UL) : 0UL;
+        var lease = enabled ? 1500UL : 0UL;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(300);
+        try
+        {
+            _motorAttempted = true;
+            await WriteWireAsync(TCodeBufferedProtocol.Encode([13, request, Boot, Session, period, lease]), timeout.Token).ConfigureAwait(false);
+            ulong[] reply;
+            do { reply = await _trackingReplies.Reader.ReadAsync(timeout.Token).ConfigureAwait(false); } while (reply[1] != request);
+            if (reply.Length != 10 || reply[0] != 107 || reply[2] != Boot || reply[4] != 0 ||
+                reply[6] != 1 || reply[7] != period || reply[8] != lease || reply[9] != 1)
+            {
+                _motorUnsupported = true;
+                _tracking.SetMotorAvailability("固件未支持电机状态扩展；动作和原跟随监测继续");
+                TestRecording.Record("motor_health_subscription", new { supported = false, reply });
+            }
+            else if (!enabled) _tracking.SetMotorAvailability("电机状态监测已关闭");
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        { _tracking.SetMotorAvailability("电机状态订阅超时；不停止动作"); }
+    }
+
     public async ValueTask DisposeAsync()
     {
+        if (_highFrequency != null) await _highFrequency.DisposeAsync();
         _trackingCancellation.Cancel();
         if (_trackingPump != null) await _trackingPump.ConfigureAwait(false);
         if (_trackingAttempted)
@@ -420,6 +484,12 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             using var cleanup = new CancellationTokenSource(100);
             try { await WriteWireAsync(TCodeBufferedProtocol.Encode([12, ++_trackingRequest, Boot, Session, 0, 0]), cleanup.Token).ConfigureAwait(false); }
             catch { /* The 1.5 s device-side lease is the disconnect fallback. */ }
+        }
+        if (_motorAttempted && !_motorUnsupported)
+        {
+            using var cleanup = new CancellationTokenSource(100);
+            try { await WriteWireAsync(TCodeBufferedProtocol.Encode([13, ++_trackingRequest, Boot, Session, 0, 0]), cleanup.Token).ConfigureAwait(false); }
+            catch { /* bounded lease expires on device */ }
         }
         _receiveCancellation.Cancel();
         try { await _receiver.ConfigureAwait(false); }

@@ -1,4 +1,4 @@
-﻿using MaterialDesignThemes.Wpf;
+using MaterialDesignThemes.Wpf;
 using MultiFunPlayer.Common;
 using MultiFunPlayer.UI;
 using MultiFunPlayer.UI.Controls.ViewModels;
@@ -37,7 +37,7 @@ internal sealed class RootViewModel : Conductor<IScreen>.Collection.AllActive, I
     public double WindowTop { get; set; }
 
     public string WindowTitleVersion => GitVersionInformation.CommitsSinceVersionSource == "0" ? $"v{GitVersionInformation.MajorMinorPatch}"
-                                                                                               : $"v{GitVersionInformation.MajorMinorPatch}.{GitVersionInformation.ShortSha}";
+                                                                                               : $"v{GitVersionInformation.MajorMinorPatch}.{GitVersionInformation.ShortSha} · 电机采集 v2.8";
 
     public RootViewModel(IEventAggregator eventAggregator)
     {
@@ -194,3 +194,8 @@ internal sealed class RootViewModel : Conductor<IScreen>.Collection.AllActive, I
 
     private record struct WINDOWPOS(IntPtr Hwnd, IntPtr HwndInsertAfter, int X, int Y, int CX, int CY, uint Flags);
 }
+
+
+
+
+

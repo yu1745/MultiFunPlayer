@@ -49,7 +49,8 @@ public class ProtocolAndPlanTests
         var source = Snapshot(points) with { Position = 1.5, Speed = 2 };
         source = source with { Axes = [source.Axes[0] with { Offset = 1, Invert = true, Minimum = .2, Maximum = .8 }] };
         var plan = TCodeBufferedPlan.Create(source, 10000000)[0];
-        Assert.Equal((ulong)Math.Round((.2 + .6 * (1 - TCodeBufferedPlan.Smooth(.25))) * 9999), plan[0].Position);
+        var whole=TCodeBufferedPlan.Create(source with { Position=1 },10000000)[0];
+        Assert.Equal((ulong)Math.Round(BufferedReversalCurve.Value(whole[0],whole[1],.25)),plan[0].Position);
         Assert.Equal(10750000UL, plan[1].Microseconds);
         Assert.Equal(11750000UL, plan[2].Microseconds);
         Assert.Equal(2000UL, plan[1].Position);

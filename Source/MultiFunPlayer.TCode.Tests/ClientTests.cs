@@ -1,4 +1,4 @@
-using MultiFunPlayer.OutputTarget.TCodeBuffered;
+﻿using MultiFunPlayer.OutputTarget.TCodeBuffered;
 using System.Threading.Channels;
 
 namespace MultiFunPlayer.TCode.Tests;
@@ -39,7 +39,7 @@ public class ClientTests
         await using var client = link.Client();
         await client.SynchronizeAsync(CancellationToken.None);
         Assert.Equal(10, link.Writes.Count);
-        Assert.All(link.Writes.Take(5), wire => Assert.Equal(link.Writes[0], wire));
+        Assert.All(link.Writes.Take(5), wire => Assert.Equal(link.Writes[0], wire.TrimStart('\n')));
         Assert.Equal(99UL, client.Boot);
         Assert.False(client.MayOwnMotion);
         link.DropWrites = 3;
@@ -59,7 +59,7 @@ public class ClientTests
         Assert.Equal(22, client.Status.Length);
         await client.BeginAsync(1, 4000000, Limits, CancellationToken.None);
         Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1], out var begin));
-        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 1, 1000000, 4000000, 20000000, 1000000, 4000000, 20000000 }, begin);
+        Assert.Equal(new ulong[] { 1, 1, 99, 0, 1, 4000000, 3, 1000000, 4000000, 20000000, 1000000, 4000000, 20000000 }, begin);
     }
 
     [Fact]
@@ -81,7 +81,7 @@ public class ClientTests
         await using var client = link.Client(diagnostics.Add);
         await client.SendAsync(0, CancellationToken.None);
         Assert.Equal(2, link.Writes.Count);
-        Assert.Equal(link.Writes[0], link.Writes[1]);
+        Assert.Equal(link.Writes[0], link.Writes[1].TrimStart('\n'));
         Assert.Equal(99UL, client.Boot);
         Assert.Contains(diagnostics, line => line.Contains("ACK TIMEOUT op=0"));
         Assert.Contains(diagnostics, line => line.StartsWith("ACK op=0") && line.Contains("rttMs="));
@@ -127,7 +127,7 @@ public class ClientTests
         link.CorruptReplies = true;
         await Assert.ThrowsAnyAsync<Exception>(() => client.SendAsync(0, CancellationToken.None));
         await Assert.ThrowsAnyAsync<Exception>(() => client.StopAsync(CancellationToken.None));
-        Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1], out var stop));
+        Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1].TrimStart('\n'), out var stop));
         Assert.Equal(5UL, stop[0]);
     }
 
@@ -140,6 +140,38 @@ public class ClientTests
         Assert.Equal(3, link.Writes.Count);
     }
 
+    [Fact] public async Task SingleBadAckRetriesAndRetainsReceiverForStop()
+    {
+        var link=new FakeLink {CorruptCount=1};
+        await using var client=link.Client();
+        await client.SendAsync(0,CancellationToken.None);
+        Assert.Equal(2,link.Writes.Count);
+        Assert.Equal(link.Writes[0],link.Writes[1].TrimStart('\n'));
+        await client.BeginAsync(1,4000000,Limits,CancellationToken.None);
+        link.CorruptReplies=true;
+        await Assert.ThrowsAsync<IOException>(()=>client.SendAsync(0,CancellationToken.None));
+        link.CorruptReplies=false;
+        await client.StopAsync(CancellationToken.None);
+        Assert.False(client.MayOwnMotion);
+    }
+    [Fact] public async Task LiveRangeDoesNotConsumeAppendSequence()
+    {
+        var link=new FakeLink();await using var client=link.Client();
+        await client.SendAsync(0,CancellationToken.None);
+        await client.BeginAsync(1,4000000,Limits,CancellationToken.None);
+        await client.SendAsync(15,CancellationToken.None,0,0,9999,1000,8000);
+        await client.SendAsync(2,CancellationToken.None,0,5000000,5000,0);
+        Assert.True(TCodeBufferedProtocol.TryDecode(link.Writes[^1],out var frame));Assert.Equal(2UL,frame[1]);
+    }
+    [Fact] public async Task MissingReplyNewlineResynchronizesWithoutAcceptingPartialFrame()
+    {
+        var link=new FakeLink {TruncatedPrefix=true};
+        await using var client=link.Client();
+        await client.SendAsync(0,CancellationToken.None);
+        Assert.Equal(99UL,client.Boot);
+        Assert.Single(link.Writes);
+    }
+
     private sealed class FakeLink
     {
         private readonly Channel<string> _received = Channel.CreateUnbounded<string>();
@@ -150,7 +182,9 @@ public class ClientTests
         public ulong State { get; set; }
         public int DropWrites { get; set; }
         public bool FragmentReplies { get; set; }
+        public bool TruncatedPrefix { get; set; }
         public bool CorruptReplies { get; set; }
+        public int CorruptCount { get; set; }
         public bool WrongRequestId { get; set; }
         public ulong Profile { get; set; } = 1;
         public ulong? SupportedAxes { get; set; } = 63;
@@ -159,7 +193,8 @@ public class ClientTests
         private Task Write(string wire, CancellationToken token)
         {
             Writes.Add(wire);
-            Assert.True(TCodeBufferedProtocol.TryDecode(wire, out var f));
+            wire=wire.TrimStart('\n');
+            Assert.True(TCodeBufferedProtocol.TryDecode(wire.TrimStart('\n'), out var f));
             if (f[0] == 1 && wire != _lastBegin)
             {
                 Assert.Equal(13, f.Length);
@@ -177,14 +212,14 @@ public class ClientTests
             if (f[0] == 10 && SupportedAxes.HasValue)
                 reply = [103, f[1], Boot, Session, 0, State, SupportedAxes.Value];
             var response = TCodeBufferedProtocol.Encode(reply);
-            if (CorruptReplies) response = response.Replace("!4,100,", "!4,101,");
+            if (CorruptReplies || CorruptCount-- > 0) response = response.Replace("!4,100,", "!4,101,");
             if (FragmentReplies)
             {
                 _received.Writer.TryWrite("boot log\r\nsr6> " + response[..7]);
                 _received.Writer.TryWrite(response[7..21]);
                 _received.Writer.TryWrite(response[21..]);
             }
-            else _received.Writer.TryWrite(response);
+            else _received.Writer.TryWrite((TruncatedPrefix ? "!4,100,123,truncated" : "") + response);
             return Task.CompletedTask;
         }
     }
