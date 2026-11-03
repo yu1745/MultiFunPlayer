@@ -1,4 +1,4 @@
-﻿using MultiFunPlayer.Common;
+using MultiFunPlayer.Common;
 using MultiFunPlayer.OutputTarget.TCodeBuffered;
 using System.Threading.Channels;
 namespace MultiFunPlayer.TCode.Tests;
@@ -91,7 +91,7 @@ public class MediaHandshakeIntegrationTests
             Assert.True(sim.ClockCorrections>=2);Assert.Equal(begins,sim.Begins);Assert.Equal(0,sim.Stops);
         } finally { cancel.Cancel();await run; }
     }
-    [Fact] public async Task DirectPlayDuringSlowPlanningIsRepausedBeforeMotion() {
+    [Fact] public async Task DirectPlayDuringSlowPlanningIsNotRepeatedlyPaused() {
         using var cancel=new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var sim=new Simulation(40,20,cancel.Token);
         await using var client=sim.Client();
@@ -102,10 +102,37 @@ public class MediaHandshakeIntegrationTests
         try {
             await entered.Task.WaitAsync(cancel.Token);
             sim.SetPlaying(true);await Task.Delay(500,cancel.Token);
-            Assert.False(sim.Snapshot().IsPlaying);Assert.Equal(0,sim.Begins);
+            Assert.True(sim.Snapshot().IsPlaying);Assert.Equal(0,sim.Begins);
             release.Set();await Until(()=>sim.Status=="Playing",run,cancel.Token);
             Assert.Equal(1,sim.Begins);
         } finally { release.Set();cancel.Cancel();await run; }
+    }
+    [Theory]
+    [InlineData("pause")]
+    [InlineData("seek")]
+    [InlineData("switch")]
+    public async Task ObsoleteCalculationCannotControlMedia(string action) {
+        using var cancel=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var sim=new Simulation(40,20,cancel.Token);
+        await using var client=sim.Client();
+        var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release=new ManualResetEventSlim();var calls=0;
+        var run=new TCodeBufferedPlayback(client,sim.Snapshot,sim.SetPlaying,()=>sim.Controls,()=>sim.Wants,s=>sim.Status=s.State,
+            planFactory:(s,p,a)=>{if(Interlocked.Increment(ref calls)==1){entered.SetResult();release.Wait(cancel.Token);throw new System.IO.InvalidDataException("obsolete calculation");}return TCodeBufferedPlan.CreateSession(s,p,a);}).RunAsync(cancel.Token);
+        try {
+            await entered.Task.WaitAsync(cancel.Token);
+            if(action=="pause")sim.UserPause();
+            else {if(action=="seek")sim.Seek(200);else sim.Switch();sim.UserPlay();}
+            if(action=="pause") {
+                await Until(()=>sim.Status=="Waiting for playback",run,cancel.Token);
+                Assert.Equal(0,sim.Begins);
+            } else await Until(()=>sim.Status=="Playing",run,cancel.Token);
+            var begins=sim.Begins;var stops=sim.Stops;
+            release.Set();await Task.Delay(500,cancel.Token);
+            Assert.Equal(begins,sim.Begins);Assert.Equal(stops,sim.Stops);
+            Assert.Equal(action!="pause",sim.Snapshot().IsPlaying);
+            Assert.False(run.IsCompleted);
+        } finally {release.Set();cancel.Cancel();await run;}
     }
     [Fact] public async Task LiveRangesDoNotPauseOrBeginAnotherSession()
     {

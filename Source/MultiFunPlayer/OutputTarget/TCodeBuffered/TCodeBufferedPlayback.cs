@@ -1,4 +1,4 @@
-﻿using MultiFunPlayer.Common;
+using MultiFunPlayer.Common;
 using System.IO;
 using MultiFunPlayer.OutputTarget.Tracking;
 
@@ -142,11 +142,13 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         report(new("正在预计算联合曲线（首次载入可能需要数分钟）", client.UncertaintyMilliseconds));
         var planningStarted=TCodeBufferedClient.HostMicroseconds;
         var planning=Task.Run(()=>ValidatedPlan(source, pose, supportedAxes),token);
-        var nextPauseRequest=0d;
         while(!planning.IsCompleted) {
-            var preparing=snapshot();
-            if(preparing.IsPlaying && TCodeBufferedClient.HostMicroseconds>=nextPauseRequest) {
-                setPlaying(false);nextPauseRequest=TCodeBufferedClient.HostMicroseconds+1500000;
+            // User intent supersedes this preparation immediately. An obsolete
+            // calculation may finish caching but must never control media.
+            if(controlRevision()!=controls || !source.HasSameTimeline(snapshot()) || source.FilterRevision!=snapshot().FilterRevision) {
+                _=planning.ContinueWith(t=>diagnostic?.Invoke("Obsolete planning failed: "+t.Exception?.GetBaseException().Message),
+                    CancellationToken.None,TaskContinuationOptions.OnlyOnFaulted,TaskScheduler.Default);
+                RestartPreparation();return;
             }
             await Task.WhenAny(planning,Task.Delay(30,token)).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();

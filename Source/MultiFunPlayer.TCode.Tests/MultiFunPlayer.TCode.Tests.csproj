@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -15,6 +15,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" PrivateAssets="all" />
     <Using Include="Xunit" />
   </ItemGroup>
+  <ItemGroup><Compile Include="../MultiFunPlayer/OutputTarget/SerialPresetSession.cs" Link="Production/SerialPresetSession.cs" /><Compile Include="../MultiFunPlayer/OutputTarget/MotorFaultRecovery.cs" Link="Production/MotorFaultRecovery.cs" /></ItemGroup>
   <!-- Exercise the production protocol/planner on Linux as well as Windows,
        without requiring the WPF desktop runtime. -->
   <ItemGroup>

@@ -47,7 +47,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
     }
     public bool IsManualOpen { get; private set; }
     public bool IsFilterOpen { get; private set; }
-    public bool CanOpenFilter => !IsFilterOpen && !IsPresetOpen && !IsManualOpen;
+    public bool CanOpenFilter => !IsFilterOpen && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy;
 
     private System.Windows.Window _filterWindow;
     public void OpenFilter()
@@ -77,7 +77,7 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
         };
         try { window.Show(); } catch { _filterWindow=null; IsFilterOpen=false; throw; }
     }
-    public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen;
+    public bool CanOpenManual => IsConnected && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy;
 
     public async Task OpenManual()
     {
@@ -110,9 +110,69 @@ internal sealed class SerialOutputTarget(int instanceIndex, IEventAggregator eve
             IsManualOpen = false;
         }
     }
+    public bool IsRecoveryBusy { get; private set; }
+    public string RecoveryStatus { get; private set; } = "";
+    public bool CanRecoverMotors => IsConnected && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy
+        && UpdateType == DeviceAxisUpdateType.BufferedUpdate;
+
+    public async Task RecoverMotors()
+    {
+        if (!CanRecoverMotors) return;
+        IsRecoveryBusy = true;
+        AutoConnectEnabled = false;
+        RecoveryStatus = "正在停止播放并等待输出停止…";
+        SerialPresetSession session = null;
+        try
+        {
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            // Do not start recovery while the media is still playing; a failed
+            // pause acknowledgement must never resume motion after recovery.
+            for (var i = 0; i < 100 && _filterProvider.GetBufferedPlaybackSnapshot(false).IsPlaying; i++)
+                await Task.Delay(30).ConfigureAwait(true);
+            if (_filterProvider.GetBufferedPlaybackSnapshot(false).IsPlaying)
+                throw new IOException("播放器未确认暂停，未执行重载。请先暂停视频。");
+            session = new SerialPresetSession();
+            lock (_modeLock)
+            {
+                if (!IsConnected || !_serialRunning || _presetSession != null || _manualSession != null)
+                    throw new IOException("串口不可用，未执行重载。");
+                _presetSession = session;
+                _motionCancellation?.Cancel();
+            }
+            await session.Ready.ConfigureAwait(true);
+            RecoveryStatus = "正在检查故障并重载，请勿开始播放…";
+            var result = await MotorFaultRecovery.RunAsync(async command =>
+            {
+                Logger.Info("Motor recovery TX: {0}", command);
+                var reply = await session.ExecuteAsync("sh " + command, 20000).ConfigureAwait(false);
+                return (string)reply["text"] ?? "";
+            }, text => Logger.Info("Motor recovery RX: {0}", text)).ConfigureAwait(true);
+            RecoveryStatus = result;
+        }
+        catch (Exception error)
+        {
+            Logger.Error(error, "Manual motor recovery failed");
+            RecoveryStatus = error.Message;
+        }
+        finally
+        {
+            // The serial worker owns the port throughout; never reconnect it.
+            // Keep the command session until media has acknowledged pause.
+            EventAggregator.Publish(new MediaPlayPauseMessage(false));
+            if (session != null)
+            {
+                if (!ReferenceEquals(_presetSession, session)) session.Fail(new IOException("串口会话已结束。"));
+                while (IsConnected && _filterProvider.GetBufferedPlaybackSnapshot(false).IsPlaying)
+                    await Task.Delay(50).ConfigureAwait(true);
+                session.Close();
+                await session.Finished.ConfigureAwait(true);
+            }
+            IsRecoveryBusy = false;
+        }
+    }
     private bool _serialRunning;
     public bool IsPresetOpen { get; private set; }
-    public bool CanOpenPresets => IsConnected && !IsPresetOpen && !IsManualOpen;
+    public bool CanOpenPresets => IsConnected && !IsPresetOpen && !IsManualOpen && !IsRecoveryBusy;
 
     public async Task OpenPresets()
     {

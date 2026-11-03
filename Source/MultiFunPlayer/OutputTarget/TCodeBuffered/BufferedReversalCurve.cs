@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Diagnostics;
 using System.Text.Json;
@@ -8,14 +9,24 @@ namespace MultiFunPlayer.OutputTarget.TCodeBuffered;
 // profile before accepting motion; profile 1 remains supported by new firmware.
 internal static class BufferedReversalCurve
 {
-    private static readonly Dictionary<string,long[]> JointCache=new();
+    private static readonly ConcurrentDictionary<string,Lazy<long[]>> JointCache=new();
+    private static readonly SemaphoreSlim SolverSlots=new(2,2);
     private static readonly string CacheFolder=Path.Combine(Environment.GetEnvironmentVariable("CTW_CURVE_CACHE") ?? @"D:\0SR-plus-work\曲线缓存", "septic-v1");
     public static void AssignOptimized(List<BufferedNode> nodes) {
         if(nodes.Count<3){Assign(nodes);return;}
         var input=JsonSerializer.Serialize(nodes.Select(n=>new[]{n.Microseconds,n.Position}));
         var key=Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input)));
-        lock(JointCache){
-            if(!JointCache.TryGetValue(key,out var values)) {
+        var work=JointCache.GetOrAdd(key,_=>new Lazy<long[]>(()=>Solve(nodes.ToList(),key,input),LazyThreadSafetyMode.ExecutionAndPublication));
+        long[] values;
+        try { values=work.Value; }
+        catch { JointCache.TryRemove(new KeyValuePair<string,Lazy<long[]>>(key,work));throw; }
+        for(int i=0;i<nodes.Count;i++)nodes[i]=nodes[i] with{AccelerationMicros=values[i]};
+        if(JointCache.Count>64)
+            foreach(var entry in JointCache.Where(e=>e.Key!=key && e.Value.IsValueCreated).Take(JointCache.Count-64))
+                JointCache.TryRemove(entry);
+    }
+    private static long[] Solve(List<BufferedNode> nodes,string key,string input) {
+                long[] values=null;
                 var cachePath=Path.Combine(CacheFolder,key+".json");
                 try { if(File.Exists(cachePath)) {
                     var cached=JsonSerializer.Deserialize<long[]>(File.ReadAllText(cachePath));
@@ -27,6 +38,8 @@ internal static class BufferedReversalCurve
                 if(values==null) {
                 var helper=Environment.GetEnvironmentVariable("CTW_JOINT_HELPER") ?? Path.Combine(AppContext.BaseDirectory,"MotionPlanner","joint_plan.py");
                 if(!File.Exists(helper))throw new InvalidDataException("联合曲线求解器缺失，未启动运动。");
+                SolverSlots.Wait();
+                try {
                 var psi=new ProcessStartInfo(Environment.GetEnvironmentVariable("CTW_JOINT_PYTHON") ?? @"C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe") {UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
                 psi.ArgumentList.Add(helper);psi.Environment["PYTHONUTF8"]="1";psi.Environment["PYTHONDONTWRITEBYTECODE"]="1";
                 using var process=Process.Start(psi) ?? throw new InvalidDataException("无法启动联合曲线求解器。");
@@ -38,15 +51,12 @@ internal static class BufferedReversalCurve
                 if(values==null||values.Length!=nodes.Count||values[0]!=0||values[^1]!=0)throw new InvalidDataException("联合曲线结果不完整。");
                 var checkedNodes=nodes.Select((n,i)=>n with{AccelerationMicros=values[i]}).ToList();
                 RepairBoundaries(checkedNodes);values=checkedNodes.Select(n=>n.AccelerationMicros).ToArray();
+                } finally { SolverSlots.Release(); }
                 try {Directory.CreateDirectory(CacheFolder);var temp=cachePath+"."+Guid.NewGuid()+".tmp";
                     File.WriteAllText(temp,JsonSerializer.Serialize(values));File.Move(temp,cachePath,true);
                 } catch(Exception e) when(e is IOException or UnauthorizedAccessException) { }
                 }
-                if(JointCache.Count>=64)JointCache.Clear();
-                JointCache[key]=values;
-            }
-            for(int i=0;i<nodes.Count;i++)nodes[i]=nodes[i] with{AccelerationMicros=values[i]};
-        }
+                return values;
     }
     public static ulong Encode(long value) => value < 0 ? checked((ulong)(-value)*2+1) : checked((ulong)value*2);
     public static void Assign(List<BufferedNode> nodes, int firstMutable = 0)

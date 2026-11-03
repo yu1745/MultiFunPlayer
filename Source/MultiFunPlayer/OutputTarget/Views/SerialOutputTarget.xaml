@@ -102,6 +102,10 @@
                     <material:PackIcon Kind="ChartLine" Width="20" Height="20"/>
                 </Button>
 
+                <Button DockPanel.Dock="Left" Command="{s:Action RecoverMotors}"
+                        IsEnabled="{Binding CanRecoverMotors}" Content="重载" Padding="8 0"
+                        ToolTipService.ShowOnDisabled="True"
+                        ToolTip="停止播放并清除设备故障；保持当前位置，不自动续播。需已连接且使用 Buffered Update。"/>
                 <ToggleButton DockPanel.Dock="Left"
                               Style="{StaticResource MaterialDesignToolBarToggleButton}"
                               IsChecked="{Binding AutoConnectEnabled}"
@@ -161,6 +165,7 @@
         </Expander.Header>
 
         <StackPanel Margin="20">
+            <TextBlock Text="{Binding RecoveryStatus}" TextWrapping="Wrap" Margin="0 0 0 5"/>
             <CheckBox IsChecked="{Binding TrackingEnabled}" Content="实时跟随监测（Buffered Update）"
                       ToolTip="921600 下默认 50 Hz；115200 下自动降为 20 Hz。需配套 P4 固件。" Margin="0 0 0 12"/>
             <DockPanel Margin="0 0 0 20" LastChildFill="True">
