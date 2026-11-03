@@ -1,4 +1,4 @@
-﻿using MultiFunPlayer.Common;
+using MultiFunPlayer.Common;
 using Stylet;
 using System.Windows.Threading;
 using MultiFunPlayer.OutputTarget.Tracking;
@@ -244,7 +244,7 @@ internal sealed class MotionFilterDialog : Screen
         try
         {
             _provider.ApplyMotionFilterSettings(ReadSettings());
-            AppliedStatus = Enabled ? "已应用六轴独立自适应缩程（实验版）"
+            AppliedStatus = Enabled ? "已应用六轴局部冲击滤波 V3（实验版）"
                 : "已关闭六轴滤波，恢复原脚本输出";
             Status = "参数已提交。播放中需等待缓冲衔接，以主界面指示灯为准。";
         }

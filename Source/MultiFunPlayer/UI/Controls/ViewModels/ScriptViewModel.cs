@@ -775,7 +775,7 @@ internal sealed class ScriptViewModel : Screen, IDeviceAxisValueProvider, IDispo
             {
                 // Legacy shared low-pass settings must not silently enable a new algorithm.
                 var version = settings[nameof(MotionFilter)]?[nameof(MotionFilterSettings.AlgorithmVersion)];
-                ApplyMotionFilterSettings(version?.Value<int>() == 2 ? motionFilter : new MotionFilterSettings());
+                ApplyMotionFilterSettings(version?.Value<int>() == 3 ? motionFilter : new MotionFilterSettings());
             }
             if (settings.TryGetValue<bool>(nameof(ValuesContentVisible), out var valuesContentVisible)) ValuesContentVisible = valuesContentVisible;
             if (settings.TryGetValue<bool>(nameof(MediaContentVisible), out var mediaContentVisible)) MediaContentVisible = mediaContentVisible;

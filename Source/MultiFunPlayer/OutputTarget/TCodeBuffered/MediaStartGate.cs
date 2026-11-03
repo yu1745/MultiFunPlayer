@@ -34,3 +34,17 @@ internal sealed class MediaStartGate(long afterSequence, MediaClockSample baseli
     }
 }
 internal sealed class MediaSynchronizationException(string message) : System.IO.IOException(message);
+
+// Mirror the device's five-second septic phase slew; all six axes share it.
+internal sealed class MediaClockSlew
+{
+    public ulong Start,End; public double Base,Delta;
+    public double Offset(ulong now) {
+        if(End==0||now<=Start)return Base;
+        if(now>=End)return Base+Delta;
+        var u=(double)(now-Start)/(End-Start);
+        return Base+Delta*u*u*u*u*(35+u*(-84+u*(70-20*u)));
+    }
+    public ulong Time(ulong now)=>(ulong)Math.Max(0,now+Offset(now)*1e6);
+    public void Set(ulong at,double change) { Base+=Delta;Delta=change;Start=at;End=at+5000000; }
+}

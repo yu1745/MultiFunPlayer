@@ -64,6 +64,8 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
     private async Task ReceiveAsync(Func<CancellationToken, Task<string>> read, CancellationToken token)
     {
         var buffer = new StringBuilder();
+        bool discardLine = false;
+        long badFrames = 0;
         try
         {
             while (!token.IsCancellationRequested)
@@ -72,13 +74,19 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                 if (chunk == null) throw new IOException("TCode connection closed.");
                 foreach (var c in chunk)
                 {
+                    if (c == '!' && buffer.Length > 0) {
+                        _diagnostic?.Invoke($"RX resynchronized at frame marker; discardedChars={buffer.Length}");
+                        buffer.Clear(); discardLine=false;
+                    }
                     if (c != '\n')
                     {
+                        if (discardLine) continue;
                         buffer.Append(c);
                         if (buffer.Length > 4096)
-                            throw new InvalidDataException("TCode reply line exceeds the receive buffer.");
+                            { buffer.Clear(); discardLine=true; _diagnostic?.Invoke("RX oversized line discarded; resynchronizing at newline"); }
                         continue;
                     }
+                    if (discardLine) { discardLine=false; buffer.Clear(); continue; }
                     var line = buffer.ToString();
                     buffer.Clear();
                     var hfIndex = line.IndexOf("!HF1,", StringComparison.Ordinal);
@@ -118,7 +126,11 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                         continue;
                     }
                     if (!TCodeBufferedProtocol.TryDecode(line[start..], out var fields))
-                        throw new InvalidDataException("Invalid TCode 0.4 acknowledgement (format or CRC32).");
+                        {
+                        badFrames++;
+                        _diagnostic?.Invoke($"RX invalid ACK discarded count={badFrames} length={line.Length} rawHex={Convert.ToHexString(Encoding.UTF8.GetBytes(line))}; transaction retry budget unchanged");
+                        continue;
+                    }
                     if (fields.Length >= 6 && fields[1] >= (1UL << 40) && fields[0] != 105)
                     {
                         // Independent read-only subscription IDs: these replies
@@ -130,7 +142,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                     {
                         if (fields.Length != 18 || fields[6] > 7 || fields[8] is > 5 and not 255
                             || fields[9] > 7 || fields.Skip(12).Any(x => x > uint.MaxValue))
-                            throw new InvalidDataException("Invalid TCode 0.4 diagnostic event.");
+                            { _diagnostic?.Invoke("RX invalid diagnostic schema discarded"); continue; }
                         var entry = TCodeDeviceDiagnostic.Decode(fields);
                         _deviceDiagnostics.Enqueue(entry);
                         while (_deviceDiagnostics.Count > 64) _deviceDiagnostics.TryDequeue(out _);
@@ -138,7 +150,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
                         continue; // An unsolicited event is never an ACK.
                     }
                     if (!ValidReply(fields))
-                        throw new InvalidDataException("Invalid TCode 0.4 acknowledgement schema.");
+                        { _diagnostic?.Invoke("RX invalid ACK schema discarded"); continue; }
                     _replies.Writer.TryWrite(fields);
                 }
             }
@@ -261,7 +273,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
 
     private async Task<ulong[]> TransactWithAttemptsAsync(ulong operation, CancellationToken token, int attempts, params ulong[] args)
     {
-        var id = operation is 0 or 6 or 9 or 10 or 11 ? ++_query : ++_request;
+        var id = operation is 0 or 6 or 9 or 10 or 11 or 15 or 16 ? ++_query : ++_request;
         var before = _deviceDiagnostics.LastOrDefault()?.Sequence ?? 0;
         _commandDiagnostic = null;
         var wire = TCodeBufferedProtocol.Encode(new ulong[] { operation, id, Boot, Session }.Concat(args));
@@ -274,7 +286,7 @@ internal sealed class TCodeBufferedClient : IAsyncDisposable
             {
                 var sent = HostMicroseconds;
                 _diagnostic?.Invoke($"TX op={operation} id={id} boot={Boot} session={Session} attempt={attempt + 1}/{attempts} args=[{string.Join(',', args)}]");
-                await WriteWireAsync(wire, timeout.Token).ConfigureAwait(false);
+                await WriteWireAsync(attempt == 0 ? wire : "\n" + wire, timeout.Token).ConfigureAwait(false);
                 while (true)
                 {
                     var reply = await _replies.Reader.ReadAsync(timeout.Token).ConfigureAwait(false);

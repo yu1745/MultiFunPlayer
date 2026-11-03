@@ -1,4 +1,4 @@
-using MultiFunPlayer.Common;
+﻿using MultiFunPlayer.Common;
 using MultiFunPlayer.OutputTarget.TCodeBuffered;
 using System.Threading.Channels;
 namespace MultiFunPlayer.TCode.Tests;
@@ -75,6 +75,55 @@ public class MediaHandshakeIntegrationTests
         }
         finally { cancel.Cancel(); await run; }
     }
+    [Theory]
+    [InlineData(40,20)]
+    [InlineData(1000,500)]
+    public async Task SlowMediaClockGetsSmoothCorrectionsWithoutPause(int period,int delay) {
+        using var cancel=new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        var sim=new Simulation(period,delay,cancel.Token){ClockRate=.994};
+        await using var client=sim.Client();
+        var run=new TCodeBufferedPlayback(client,sim.Snapshot,sim.SetPlaying,()=>sim.Controls,()=>sim.Wants,s=>sim.Status=s.State).RunAsync(cancel.Token);
+        try {
+            await Until(()=>sim.Status=="Playing",run,cancel.Token);
+            var begins=sim.Begins;
+            await Task.Delay(35000,cancel.Token);
+            Assert.False(run.IsCompleted);Assert.Equal("Playing",sim.Status);
+            Assert.True(sim.ClockCorrections>=2);Assert.Equal(begins,sim.Begins);Assert.Equal(0,sim.Stops);
+        } finally { cancel.Cancel();await run; }
+    }
+    [Fact] public async Task DirectPlayDuringSlowPlanningIsRepausedBeforeMotion() {
+        using var cancel=new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var sim=new Simulation(40,20,cancel.Token);
+        await using var client=sim.Client();
+        var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release=new ManualResetEventSlim();var calls=0;
+        var run=new TCodeBufferedPlayback(client,sim.Snapshot,sim.SetPlaying,()=>sim.Controls,()=>sim.Wants,s=>sim.Status=s.State,
+            planFactory:(s,p,a)=>{if(Interlocked.Increment(ref calls)==1){entered.SetResult();release.Wait(cancel.Token);}return TCodeBufferedPlan.CreateSession(s,p,a);}).RunAsync(cancel.Token);
+        try {
+            await entered.Task.WaitAsync(cancel.Token);
+            sim.SetPlaying(true);await Task.Delay(500,cancel.Token);
+            Assert.False(sim.Snapshot().IsPlaying);Assert.Equal(0,sim.Begins);
+            release.Set();await Until(()=>sim.Status=="Playing",run,cancel.Token);
+            Assert.Equal(1,sim.Begins);
+        } finally { release.Set();cancel.Cancel();await run; }
+    }
+    [Fact] public async Task LiveRangesDoNotPauseOrBeginAnotherSession()
+    {
+        using var cancel=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var sim=new Simulation(40,20,cancel.Token);
+        await using var client=sim.Client();
+        var run=new TCodeBufferedPlayback(client,sim.Snapshot,sim.SetPlaying,()=>sim.Controls,()=>sim.Wants,s=>sim.Status=s.State).RunAsync(cancel.Token);
+        try {
+            await Until(()=>sim.Status=="Playing",run,cancel.Token);
+            var begins=sim.Begins;var stops=sim.Stops;
+            sim.Range(.2,.8);
+            await Until(()=>sim.RangeCommands>0,run,cancel.Token);
+            sim.Range(0,1);
+            await Until(()=>sim.RangeCommands>1,run,cancel.Token);
+            Assert.Equal(begins,sim.Begins);Assert.Equal(stops,sim.Stops);
+            Assert.True(sim.Snapshot().IsPlaying);Assert.False(run.IsCompleted);
+        }finally{cancel.Cancel();await run;}
+    }
     private static async Task Until(Func<bool> condition,Task run,CancellationToken token)
     {
         while(!condition()) { if(run.IsCompleted) {await run; Assert.Fail("Playback ended unexpectedly");} await Task.Delay(20,token); }
@@ -82,10 +131,14 @@ public class MediaHandshakeIntegrationTests
     private sealed class Simulation
     {
         readonly Channel<string> replies=Channel.CreateUnbounded<string>();
+        public double ClockRate=1;
+        public int ClockCorrections;
         readonly object mutex=new(); readonly int delay; readonly CancellationToken token;
         BufferedPlaybackSnapshot value; double anchor=10, anchorHost=TCodeBufferedClient.HostMicroseconds;
         bool playing=true; long seq; int reports; ulong state,session; ulong[] tails=new ulong[6];
         public string Status=""; public long Controls; public bool Wants=true;
+        public int RangeCommands;
+        public void Range(double min,double max){lock(mutex)value=value with{Axes=value.Axes.Select(a=>a with{Minimum=min,Maximum=max}).ToArray()};}
         public int Begins,Stops,ResumeCommands,MinReportsBeforeBegin=int.MaxValue;
         public bool FailOnArm;
         public void InvalidScript(){lock(mutex){Keyframe[] f=[new(0,.5),new(11,.5),new(11.001,double.NaN),new(11.002,0),new(1000,.5)];value=value with{Axes=[new("L0",f,0,1,false,.5)]};}}
@@ -94,12 +147,12 @@ public class MediaHandshakeIntegrationTests
             this.delay=delay;this.token=token;
             Keyframe[] frames=[new(0,.5),new(1000,.5)];
             value=new(true,10,1,1,[new("L0",frames,0,1,false,.5)],MediaSample:new(10,anchorHost,++seq));
-            _=Task.Run(async()=> {try {while(true){await Task.Delay(period,token);lock(mutex){var now=TCodeBufferedClient.HostMicroseconds;var pos=anchor+(playing?(now-anchorHost)/1e6:0);value=value with{Position=pos,IsPlaying=playing,MediaSample=new(pos,now,++seq)};if(playing)reports++;}}}catch(OperationCanceledException){}},token);
+            _=Task.Run(async()=> {try {while(true){await Task.Delay(period,token);lock(mutex){var now=TCodeBufferedClient.HostMicroseconds;var pos=anchor+(playing?(now-anchorHost)/1e6*ClockRate:0);value=value with{Position=pos,IsPlaying=playing,MediaSample=new(pos,now,++seq)};if(playing)reports++;}}}catch(OperationCanceledException){}},token);
         }
         public BufferedPlaybackSnapshot Snapshot(){lock(mutex)return value;}
         public void SetPlaying(bool yes)
         {
-            _=Task.Run(async()=>{try{await Task.Delay(delay,token);lock(mutex){var now=TCodeBufferedClient.HostMicroseconds;anchor+=playing?(now-anchorHost)/1e6:0;anchorHost=now;playing=yes;reports=0;value=value with{IsPlaying=yes,Position=anchor};}}catch(OperationCanceledException){}},token);
+            _=Task.Run(async()=>{try{await Task.Delay(delay,token);lock(mutex){var now=TCodeBufferedClient.HostMicroseconds;anchor+=playing?(now-anchorHost)/1e6*ClockRate:0;anchorHost=now;playing=yes;reports=0;value=value with{IsPlaying=yes,Position=anchor};}}catch(OperationCanceledException){}},token);
         }
         public void Seek(double p){lock(mutex){anchor=p;anchorHost=TCodeBufferedClient.HostMicroseconds;value=value with{Revision=value.Revision+1,Position=p,MediaSample=new(p,anchorHost,++seq)};}}
         public void Switch(){Seek(20);lock(mutex){Keyframe[] f=[new(0,.5),new(1000,.5)];value=value with{Axes=[new("L0",f,0,1,false,.5)]};}}
@@ -115,6 +168,8 @@ public class MediaHandshakeIntegrationTests
             if(f[0]==4)state=FailOnArm?5UL:3UL;
             if(f[0]==5){state=0;Stops++;}
             if(f[0]==8)ResumeCommands++;
+            if(f[0]==15)RangeCommands++;
+            if(f[0]==16)ClockCorrections++;
             ulong[] r=[100,f[1],99,session,0,state,now,1,512,512,512,512,512,512,512,tails[0],tails[1],tails[2],tails[3],tails[4],tails[5],0];
             if(f[0]==6)r=[101,f[1],99,session,0,state,1,500000,500000,500000,500000,500000,500000];
             if(f[0]==9)r=[102,f[1],99,session,0,state,now,0,0,0,0];

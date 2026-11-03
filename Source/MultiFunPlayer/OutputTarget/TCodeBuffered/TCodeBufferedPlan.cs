@@ -24,7 +24,7 @@ internal static class TCodeBufferedPlan
         // Establish one envelope before BEGIN from both raw and filtered scripts.
         // Live strength reductions may restore original motion but never enlarge
         // the accepted envelope in the middle of a session.
-        if(snapshot.Axes.Any(a=>a.OriginalKeyframes!=null)) {
+        if(snapshot.Axes.Any(a=>a.OriginalKeyframes!=null && !ReferenceEquals(a.Keyframes,a.OriginalKeyframes))) {
             var raw=Create(snapshot with{Axes=snapshot.Axes.Select(a=>a with{Keyframes=a.OriginalKeyframes ?? a.Keyframes}).ToArray()},0);
             var rawLimits=BufferedSessionLimits.FromScript(raw,device.Positions);
             BufferedAxisLimits Max(BufferedAxisLimits a,BufferedAxisLimits b)=>new(Math.Max(a.Velocity,b.Velocity),Math.Max(a.Acceleration,b.Acceleration),Math.Max(a.Jerk,b.Jerk));
@@ -104,7 +104,7 @@ internal static class TCodeBufferedPlan
                 || axis.Minimum < 0 || axis.Maximum > 1 || axis.Minimum > axis.Maximum)
                 throw new InvalidDataException($"Invalid {axis.Name} buffered output settings.");
 
-            var originalTurns = TurningPoints(axis.Keyframes);
+            var originalTurns = TurningPoints(axis.Keyframes, axis.OriginalKeyframes != null && !ReferenceEquals(axis.Keyframes, axis.OriginalKeyframes) ? 1e-10 : .01);
             var turns = NormalizeSpacing(originalTurns, snapshot.Speed);
             if (turns.Count != originalTurns.Count)
                 MultiFunPlayer.OutputTarget.Tracking.TestRecording.Record("trajectory_dense_points", new {
@@ -202,7 +202,7 @@ internal static class TCodeBufferedPlan
 
     // Same 1% hysteresis as CTW's xtp-web planner. Preserve the explicit
     // stationary introduction, rather than stretching the first stroke into it.
-    internal static List<Keyframe> TurningPoints(IReadOnlyList<Keyframe> points)
+    internal static List<Keyframe> TurningPoints(IReadOnlyList<Keyframe> points, double hysteresis = .01)
     {
         if (points == null || points.Count == 0)
             throw new InvalidDataException("Empty TCode script.");
@@ -222,7 +222,7 @@ internal static class TCodeBufferedPlan
             if (direction == 0)
             {
                 if (point.Value == turns[0].Value) departure = point;
-                if (Math.Abs(point.Value - turns[0].Value) >= .01 - 1e-12)
+                if (Math.Abs(point.Value - turns[0].Value) >= hysteresis - 1e-12)
                 {
                     if (departure.Position > turns[0].Position) turns.Add(departure);
                     direction = Math.Sign(point.Value - turns[0].Value);
@@ -231,14 +231,14 @@ internal static class TCodeBufferedPlan
             }
             else if (direction * (point.Value - extreme.Value) >= 0)
                 extreme = point;
-            else if (direction * (extreme.Value - point.Value) >= .01 - 1e-12)
+            else if (direction * (extreme.Value - point.Value) >= hysteresis - 1e-12)
             {
                 turns.Add(extreme);
                 direction = -direction;
                 extreme = point;
             }
         }
-        if (direction != 0 && Math.Abs(extreme.Value - turns[^1].Value) >= .01 - 1e-12)
+        if (direction != 0 && Math.Abs(extreme.Value - turns[^1].Value) >= hysteresis - 1e-12)
             turns.Add(extreme);
         if (turns[^1].Position != points[^1].Position)
             turns.Add(points[^1]);
@@ -253,3 +253,4 @@ internal static class TCodeBufferedPlan
         return turns.DistinctBy(p => p.Position).OrderBy(p => p.Position).ToList();
     }
 }
+

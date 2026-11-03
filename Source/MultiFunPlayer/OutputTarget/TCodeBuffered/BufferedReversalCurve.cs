@@ -9,12 +9,22 @@ namespace MultiFunPlayer.OutputTarget.TCodeBuffered;
 internal static class BufferedReversalCurve
 {
     private static readonly Dictionary<string,long[]> JointCache=new();
+    private static readonly string CacheFolder=Path.Combine(Environment.GetEnvironmentVariable("CTW_CURVE_CACHE") ?? @"D:\0SR-plus-work\曲线缓存", "septic-v1");
     public static void AssignOptimized(List<BufferedNode> nodes) {
         if(nodes.Count<3){Assign(nodes);return;}
         var input=JsonSerializer.Serialize(nodes.Select(n=>new[]{n.Microseconds,n.Position}));
         var key=Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input)));
         lock(JointCache){
             if(!JointCache.TryGetValue(key,out var values)) {
+                var cachePath=Path.Combine(CacheFolder,key+".json");
+                try { if(File.Exists(cachePath)) {
+                    var cached=JsonSerializer.Deserialize<long[]>(File.ReadAllText(cachePath));
+                    if(cached?.Length==nodes.Count && cached[0]==0 && cached[^1]==0) {
+                        var checkedCache=nodes.Select((n,i)=>n with{AccelerationMicros=cached[i]}).ToList();
+                        if(Enumerable.Range(0,checkedCache.Count-1).All(i=>Allowed(checkedCache[i],checkedCache[i+1])))values=cached;
+                    }
+                }} catch(Exception e) when(e is IOException or UnauthorizedAccessException or JsonException) { }
+                if(values==null) {
                 var helper=Environment.GetEnvironmentVariable("CTW_JOINT_HELPER") ?? Path.Combine(AppContext.BaseDirectory,"MotionPlanner","joint_plan.py");
                 if(!File.Exists(helper))throw new InvalidDataException("联合曲线求解器缺失，未启动运动。");
                 var psi=new ProcessStartInfo(Environment.GetEnvironmentVariable("CTW_JOINT_PYTHON") ?? @"C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe") {UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
@@ -28,6 +38,11 @@ internal static class BufferedReversalCurve
                 if(values==null||values.Length!=nodes.Count||values[0]!=0||values[^1]!=0)throw new InvalidDataException("联合曲线结果不完整。");
                 var checkedNodes=nodes.Select((n,i)=>n with{AccelerationMicros=values[i]}).ToList();
                 RepairBoundaries(checkedNodes);values=checkedNodes.Select(n=>n.AccelerationMicros).ToArray();
+                try {Directory.CreateDirectory(CacheFolder);var temp=cachePath+"."+Guid.NewGuid()+".tmp";
+                    File.WriteAllText(temp,JsonSerializer.Serialize(values));File.Move(temp,cachePath,true);
+                } catch(Exception e) when(e is IOException or UnauthorizedAccessException) { }
+                }
+                if(JointCache.Count>=64)JointCache.Clear();
                 JointCache[key]=values;
             }
             for(int i=0;i<nodes.Count;i++)nodes[i]=nodes[i] with{AccelerationMicros=values[i]};

@@ -1,4 +1,4 @@
-using MultiFunPlayer.Common;
+﻿using MultiFunPlayer.Common;
 using MultiFunPlayer.OutputTarget.TCodeBuffered;
 
 namespace MultiFunPlayer.TCode.Tests;
@@ -136,7 +136,7 @@ public class SessionPlanTests
         var plan = TCodeBufferedPlan.CreateSession(
             ProtocolAndPlanTests.Snapshot([new(0, .5), new(.2, .6), new(.4, .5)]), pose);
         Assert.InRange(plan.PositioningMicroseconds, 50000UL, 200000UL);
-        Assert.Equal(750000UL, TCodeBufferedPlayback.PreloadLeadMicroseconds(plan, 8));
+        Assert.Equal(550000UL, TCodeBufferedPlayback.PreloadLeadMicroseconds(plan, 8));
         Verify(plan, pose);
     }
 

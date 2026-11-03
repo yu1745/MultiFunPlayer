@@ -1,10 +1,10 @@
-﻿using MultiFunPlayer.Common;
+using MultiFunPlayer.Common;
 using MultiFunPlayer.OutputTarget.TCodeBuffered;
 
 namespace MultiFunPlayer.TCode.Tests;
 public class MotionScriptFilterTests
 {
-    private static readonly MotionFilterSettings Enabled = new(true);
+    private static readonly MotionFilterSettings Enabled = new(true) { AlgorithmVersion = 2 };
     private static Keyframe[] Wave(double halfPeriod, double amplitude, int count = 101) =>
         Enumerable.Range(0, count).Select(i => new Keyframe(i * halfPeriod, .5 + (i % 2 == 0 ? -amplitude : amplitude))).ToArray();
     private static double Span(IReadOnlyList<Keyframe> p) => p.Skip(10).Take(p.Count - 20).Max(k => k.Value) - p.Skip(10).Take(p.Count - 20).Min(k => k.Value);

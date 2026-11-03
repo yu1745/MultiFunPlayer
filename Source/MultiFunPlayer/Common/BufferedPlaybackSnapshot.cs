@@ -1,4 +1,4 @@
-namespace MultiFunPlayer.Common;
+﻿namespace MultiFunPlayer.Common;
 
 // Positions/offsets are seconds; values are normalized. Keyframes are published
 // by ScriptViewModel as a new collection when a script is replaced.
@@ -9,6 +9,11 @@ internal sealed record BufferedScriptAxis(string Name, IReadOnlyList<Keyframe> K
 internal sealed record BufferedPlaybackSnapshot(bool IsPlaying, double Position, double Speed,
     long Revision, IReadOnlyList<BufferedScriptAxis> Axes, long FilterRevision = 0, MediaClockSample MediaSample = null)
 {
+    public bool HasSameMotionTimeline(BufferedPlaybackSnapshot other)
+        => HasSameTimeline(other with { Axes = other.Axes.Select(a => {
+            var original=Axes.FirstOrDefault(b=>b.Name==a.Name);
+            return original==null?a:a with {Minimum=original.Minimum,Maximum=original.Maximum};
+        }).ToArray() });
     public bool HasSameTimeline(BufferedPlaybackSnapshot other)
         => Revision == other.Revision && Speed == other.Speed && Axes.Count == other.Axes.Count
         && Axes.Zip(other.Axes).All(pair =>

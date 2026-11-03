@@ -1,4 +1,4 @@
-using MultiFunPlayer.Common;
+﻿using MultiFunPlayer.Common;
 using System.IO;
 using MultiFunPlayer.OutputTarget.Tracking;
 
@@ -13,11 +13,14 @@ internal sealed record BufferedPlaybackStatus(string State, double ClockUncertai
 internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
     Func<BufferedPlaybackSnapshot> snapshot, Action<bool> setPlaying,
     Func<long> controlRevision, Func<bool> wantsPlayback, Action<BufferedPlaybackStatus> report,
-    Action<string> diagnostic = null)
+    Action<string> diagnostic = null,
+    Func<BufferedPlaybackSnapshot,BufferedDevicePose,ulong,BufferedSessionPlan> planFactory = null)
 {
     private static readonly SemaphoreSlim MediaControlLease = new(1, 1);
     private bool _prepareAgain;
     private long _preparation;
+    private Task _warmPlan=Task.CompletedTask;
+    private BufferedPlaybackSnapshot _warmed;
 
     public async Task RunAsync(CancellationToken token)
     {
@@ -37,8 +40,23 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             while (!token.IsCancellationRequested)
             {
                 report(new("Waiting for playback", client.UncertaintyMilliseconds));
-                while ((!snapshot().IsPlaying && !_prepareAgain) || snapshot().Axes.Count == 0 || !double.IsFinite(snapshot().Position))
+                while ((!snapshot().IsPlaying && !_prepareAgain) || snapshot().Axes.Count == 0 || !double.IsFinite(snapshot().Position)) {
+                    var idle=snapshot();
+                    if(!idle.IsPlaying && idle.Axes.Count>0 && _warmPlan.IsCompleted &&
+                        (_warmed==null || !_warmed.HasSameTimeline(idle) || _warmed.FilterRevision!=idle.FilterRevision)) {
+                        _warmed=idle;
+                        _warmPlan=Task.Run(()=> {
+                            var began=TCodeBufferedClient.HostMicroseconds;
+                            try {
+                                _=TCodeBufferedPlan.Create(idle,0);
+                                if(idle.Axes.Any(a=>a.OriginalKeyframes!=null&&!ReferenceEquals(a.Keyframes,a.OriginalKeyframes)))
+                                    _=TCodeBufferedPlan.Create(idle with{Axes=idle.Axes.Select(a=>a with{Keyframes=a.OriginalKeyframes??a.Keyframes}).ToArray()},0);
+                                diagnostic?.Invoke($"PRECOMPUTE ready elapsedMs={(TCodeBufferedClient.HostMicroseconds-began)/1000:F2}");
+                            } catch(Exception e) {diagnostic?.Invoke("PRECOMPUTE deferred: "+e.Message);}
+                        },token);
+                    }
                     await Task.Delay(30, token).ConfigureAwait(false);
+                }
                 _prepareAgain = false;
                 try { await PlaySessionAsync(token).ConfigureAwait(false); }
                 catch (Exception e) when (e is MediaSynchronizationException or PlaybackHoldException)
@@ -82,9 +100,9 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         }
     }
 
-    private static BufferedSessionPlan ValidatedPlan(BufferedPlaybackSnapshot source, BufferedDevicePose pose, ulong axes)
+    private BufferedSessionPlan ValidatedPlan(BufferedPlaybackSnapshot source, BufferedDevicePose pose, ulong axes)
     {
-        try { return TCodeBufferedPlan.CreateSession(source, pose, axes); }
+        try { return planFactory?.Invoke(source,pose,axes) ?? TCodeBufferedPlan.CreateSession(source, pose, axes); }
         catch (InvalidDataException e)
         {
             throw new PlaybackHoldException("轨迹未通过校验，已暂停，串口保持连接；请更换片段或调整设置。" + e.Message);
@@ -122,7 +140,23 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         diagnostic?.Invoke($"PREP {preparation} supportedAxes={supportedAxes} ignoredAxes=[{string.Join(',', ignored)}]");
         // Validate locally before requesting playback; no BEGIN/ARM during this gate.
         report(new("正在预计算联合曲线（首次载入可能需要数分钟）", client.UncertaintyMilliseconds));
-        _ = await Task.Run(()=>ValidatedPlan(source, pose, supportedAxes),token).ConfigureAwait(false);
+        var planningStarted=TCodeBufferedClient.HostMicroseconds;
+        var planning=Task.Run(()=>ValidatedPlan(source, pose, supportedAxes),token);
+        var nextPauseRequest=0d;
+        while(!planning.IsCompleted) {
+            var preparing=snapshot();
+            if(preparing.IsPlaying && TCodeBufferedClient.HostMicroseconds>=nextPauseRequest) {
+                setPlaying(false);nextPauseRequest=TCodeBufferedClient.HostMicroseconds+1500000;
+            }
+            await Task.WhenAny(planning,Task.Delay(30,token)).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+        }
+        _ = await planning.ConfigureAwait(false);
+        diagnostic?.Invoke($"PREP {preparation} planning complete elapsedMs={(TCodeBufferedClient.HostMicroseconds-planningStarted)/1000:F2}");
+        // A direct play click during computation must not silently skip seconds.
+        // Use the current media cursor for the subsequent future start gate.
+        if(!snapshot().IsPlaying && snapshot().MediaSample is { } pausedSample)
+            source=source with{Position=pausedSample.Position};
         token.ThrowIfCancellationRequested();
         if(controlRevision()!=controls || !source.HasSameTimeline(snapshot())) { RestartPreparation(); return; }
         await client.SynchronizeAsync(token).ConfigureAwait(false);
@@ -150,7 +184,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         var anchorPosition = MediaStartGate.PositionNow(observed, TCodeBufferedClient.HostMicroseconds);
         // Pick a future script point, allowing the existing validated positioning
         // envelope to reach it. Never replay the skipped startup interval faster.
-        var horizon = 2000000UL;
+        var horizon = 0UL;
         BufferedSessionPlan plan;
         ulong start, epoch;
         var readyDeadline = TCodeBufferedClient.HostMicroseconds + 5000000;
@@ -175,7 +209,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                     continue; // Recompute a future epoch instead of reusing an expired start.
                 }
             }
-            horizon = required + 250000;
+            horizon = required + 50000;
             if (horizon > 30000000)
                 throw new MediaSynchronizationException("Positioning needs a longer startup window; device was not started.");
         }
@@ -189,6 +223,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         var handledFilterRevision=source.FilterRevision;
         ulong filterEffectiveAt=0;
         long scheduledFilterRevision=source.FilterRevision;
+        var mediaClock=new MediaClockSlew();
         var cursor = new int[6];
         var sealedAxes = new bool[6];
         report(new("Preloading", client.UncertaintyMilliseconds, Limits: plan.Limits));
@@ -215,6 +250,11 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         if (ChangedWhilePreparing()) { await StopAsync(); RestartPreparation(); return; }
         var nextRefill = 0UL;
         var nextClockSample = 0UL;
+        var nextClockCorrection=0UL;
+        bool clockCorrectionSupported=true;
+        var nextRangeUpdate=0UL;
+        var rangeNotice="";
+        var appliedRanges=source.Axes.ToDictionary(a=>a.Name,a=>(a.Minimum,a.Maximum));
 
 
 
@@ -225,7 +265,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         {
             token.ThrowIfCancellationRequested();
             var current = snapshot();
-            if (!source.HasSameTimeline(current))
+            if (!source.HasSameMotionTimeline(current))
             {
                 Trace($"playback interrupted sameTimeline={source.HasSameTimeline(current)} controlsAtStart={controls}", current);
                 break;
@@ -237,11 +277,37 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
                 continue;
             }
             controls = controlRevision();
+            await CorrectMediaClock(current).ConfigureAwait(false);
             CheckMediaClock(current, "playback");
+            if(client.Now>=nextRangeUpdate) {
+                foreach(var a in current.Axes) {
+                    if(!appliedRanges.TryGetValue(a.Name,out var applied) || applied==(a.Minimum,a.Maximum))continue;
+                    var original=source.Axes.First(b=>b.Name==a.Name);
+                    int axis=Array.IndexOf(TCodeBufferedPlan.AxisNames,a.Name);
+                    try {
+                        if(original.Maximum-original.Minimum<.0001)throw new InvalidDataException("本次启动时范围为零，扩大范围需暂停后重新播放");
+                        ulong Encode(double v)=>checked((ulong)Math.Round(v*9999,MidpointRounding.AwayFromZero));
+                        await client.SendAsync(15,token,(ulong)axis,Encode(original.Minimum),Encode(original.Maximum),Encode(a.Minimum),Encode(a.Maximum)).ConfigureAwait(false);
+                        rangeNotice="";
+                        diagnostic?.Invoke($"LIVE RANGE applied axis={a.Name} min={a.Minimum:F4} max={a.Maximum:F4} deviceUs={client.Now}");
+                        TestRecording.Record("live_range_applied",new{a.Name,a.Minimum,a.Maximum,current.Position,deviceUs=client.Now});
+                    } catch(InvalidDataException ex) {
+                        rangeNotice="范围调整未应用："+ex.Message;
+                        report(new(rangeNotice,client.UncertaintyMilliseconds));
+                        diagnostic?.Invoke("LIVE RANGE rejected: "+ex.Message);
+                    } catch(TCodeBufferedException ex) {
+                        rangeNotice="范围调整未应用：需要匹配的实时范围固件";
+                        report(new(rangeNotice,client.UncertaintyMilliseconds));
+                        diagnostic?.Invoke("LIVE RANGE rejected: "+ex.Message);
+                    }
+                    appliedRanges[a.Name]=(a.Minimum,a.Maximum);
+                }
+                nextRangeUpdate=client.Now+100000;
+            }
             if(current.FilterRevision!=handledFilterRevision) {
                 handledFilterRevision=current.FilterRevision;
                 try {
-                    var targetSnapshot=current with {Position=source.Position,Axes=current.Axes.Where(a=>Array.IndexOf(TCodeBufferedPlan.AxisNames,a.Name) is var i && i>=0 && (supportedAxes & (1UL<<i))!=0).ToArray()};
+                    var targetSnapshot=current with {Position=source.Position,Axes=current.Axes.Select(a=> {var b=source.Axes.FirstOrDefault(b=>b.Name==a.Name);return b==null?a:a with{Minimum=b.Minimum,Maximum=b.Maximum};}).Where(a=>Array.IndexOf(TCodeBufferedPlan.AxisNames,a.Name) is var i && i>=0 && (supportedAxes & (1UL<<i))!=0).ToArray()};
                     var target=TCodeBufferedPlan.Create(targetSnapshot,epoch);
                     var splice=BufferedFilterSplice.Create(nodes,target,cursor,sealedAxes,plan.Limits,client.Now);
                     if(filterEffectiveAt>0)FilterUsageLog.Write("transition_superseded",new{previousRevision=scheduledFilterRevision,newRevision=current.FilterRevision,previousEnd=filterEffectiveAt,deviceNow=client.Now});
@@ -269,7 +335,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
 
                 var tails = nodes.Select((p, i) => p.Count > 0 && !sealedAxes[i] ? client.Status[15 + i] : ulong.MaxValue).ToArray();
                 var buffered = tails.Min() == ulong.MaxValue ? 0 : Math.Max(0, ((double)tails.Min() - client.Now) / 1000000);
-                report(new(client.Status[5] == 4 ? "Complete (holding)" : "Playing", client.UncertaintyMilliseconds, buffered, plan.Limits));
+                report(new((client.Status[5] == 4 ? "Complete (holding)" : "Playing") + (rangeNotice.Length>0?" · "+rangeNotice:""), client.UncertaintyMilliseconds, buffered, plan.Limits));
                 nextRefill = client.Now + 200000;
             }
             await Task.Delay(20, token).ConfigureAwait(false);
@@ -330,16 +396,40 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         {
             token.ThrowIfCancellationRequested();
             var current = snapshot();
-            if (!current.IsPlaying || current.FilterRevision!=handledFilterRevision || !source.HasSameTimeline(current) || controlRevision() != controls)
+            if (!current.IsPlaying || current.FilterRevision!=handledFilterRevision || !source.HasSameMotionTimeline(current) || controlRevision() != controls)
                 return true;
             CheckMediaClock(current, "refill");
             return false;
         }
 
+        async Task CorrectMediaClock(BufferedPlaybackSnapshot current)
+        {
+            var now=client.Now;
+            if(!clockCorrectionSupported || now<nextClockCorrection || now<mediaClock.End || client.Status[5]!=3)return;
+            nextClockCorrection=now+1000000;
+            var expected=source.Position+((double)mediaClock.Time(now)-epoch)/1e6*source.Speed;
+            var drift=(MediaStartGate.PositionNow(current,TCodeBufferedClient.HostMicroseconds)-expected)/source.Speed;
+            // Large changes remain seek/clock faults, never chase them as drift.
+            if(!double.IsFinite(drift)||Math.Abs(drift)<.030||Math.Abs(drift)>.150)return;
+            var delta=Math.Clamp(drift*.8,-.040,.040);
+            if(Math.Abs(mediaClock.Base+mediaClock.Delta+delta)>2)return;
+            var at=now+250000;
+            var change=(long)Math.Round(delta*1e6);
+            try {
+                await client.SendAsync(16,token,at,(ulong)(change+40000)).ConfigureAwait(false);
+                mediaClock.Set(at,change/1e6);nextClockCorrection=mediaClock.End+250000;
+                diagnostic?.Invoke($"CLOCK SLEW startUs={at} deltaUs={change} durationUs=5000000 driftMs={drift*1000:F3}");
+                FilterUsageLog.Write("clock_slew",new{at,change,drift,boot=client.Boot,session=client.Session});
+            } catch(TCodeBufferedException e) {
+                clockCorrectionSupported=false;
+                diagnostic?.Invoke("CLOCK SLEW unavailable; original 200ms protection retained: "+e.Message);
+            }
+        }
+
         void CheckMediaClock(BufferedPlaybackSnapshot current, string phase)
         {
             var now = client.Now;
-            var expected = source.Position + ((double)now - epoch) / 1000000 * source.Speed;
+            var expected = source.Position + ((double)mediaClock.Time(now) - epoch) / 1000000 * source.Speed;
             var actualPosition = MediaStartGate.PositionNow(current, TCodeBufferedClient.HostMicroseconds);
             var drift = actualPosition - expected;
             var failed = !double.IsFinite(current.Position) || Math.Abs(drift) > .200;
@@ -375,7 +465,7 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
             while (true)
             {
                 if (changed()) return false;
-                var horizon = preloadHorizon ?? client.Now + 6000000;
+                var horizon = preloadHorizon ?? mediaClock.Time(client.Now) + 6000000;
                 var free = client.Status.Skip(9).Take(6).ToArray();
                 var tails = client.Status.Skip(15).Take(6).ToArray();
                 var next = (int[])cursor.Clone();
@@ -418,8 +508,8 @@ internal sealed class TCodeBufferedPlayback(TCodeBufferedClient client,
         // point beyond the horizon, as RefillAsync does.
         var points = plan.Nodes.Sum(axis => axis.Count == 0 ? 0 :
             Math.Min(axis.Count, axis.TakeWhile(n => n.Microseconds < 1000000).Count() + 1));
-        var transactions = (points + 4) / 5 + 3; // BEGIN, optional SEAL, ARM
-        var milliseconds = Math.Max(750, 200 + transactions * Math.Max(25, uncertaintyMs * 2 + 5) * 2);
+        var transactions = (points + 3) / 4 + 3; // BEGIN, optional SEAL, ARM
+        var milliseconds = Math.Max(550, 100 + transactions * Math.Max(15, uncertaintyMs * 2 + 5) * 2);
         if (milliseconds > 9000)
             throw new IOException("Initial trajectory is too dense for the measured connection latency.");
         return (ulong)Math.Ceiling(milliseconds * 1000);
